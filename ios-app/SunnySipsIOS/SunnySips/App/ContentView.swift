@@ -4,136 +4,128 @@ import UIKit
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
-    @StateObject private var viewModel = SunnySipsViewModel()
-    @State private var selectedTab: AppTab = .map
-    @State private var showFilters = false
-    @State private var showFullMap = false
-    @State private var showLocationSettingsAlert = false
-    @State private var locateRequestID = 0
 
-    enum AppTab: String, Hashable {
-        case map
-        case list
-    }
+    @StateObject private var viewModel = SunnySipsViewModel()
+    @State private var listDetent: PresentationDetent = .fraction(0.25)
 
     var body: some View {
         NavigationStack {
-            Group {
-                if viewModel.isLoading && viewModel.snapshotIndex == nil {
-                    ProgressView("Loading snapshots...")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    VStack(spacing: 10) {
-                        summaryCard
-                            .padding(.horizontal, 16)
-                            .padding(.top, 10)
-                        tabSection
-                            .padding(.horizontal, 8)
-                            .padding(.bottom, 4)
+            ZStack(alignment: .top) {
+                CafeMapView(
+                    cafes: viewModel.cafes,
+                    selectedCafe: $viewModel.selectedCafe,
+                    region: $viewModel.mapRegion,
+                    locateRequestID: viewModel.locateUserRequestID,
+                    onRegionChanged: { viewModel.mapRegionChanged($0) },
+                    onSelectCafe: { viewModel.selectCafeFromMap($0) },
+                    onPermissionDenied: { viewModel.locationPermissionDenied() }
+                )
+                .ignoresSafeArea(edges: .bottom)
+
+                statsHeader
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+
+                if let nonBlockingError = viewModel.errorMessage, viewModel.blockingError == nil {
+                    VStack {
+                        Spacer()
+                        Text(nonBlockingError)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .padding(.bottom, 18)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .transition(.opacity)
                 }
             }
-            .background(ThemeColor.cream.opacity(0.25))
             .navigationTitle("SunnySips")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("SunnySips")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(ThemeColor.accentGold)
+                }
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        showFilters = true
+                        viewModel.isFilterSheetPresented = true
                     } label: {
-                        Label("Filters", systemImage: "slider.horizontal.3")
+                        Image(systemName: "slider.horizontal.3")
                     }
+                    .accessibilityLabel("Open filters")
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 12) {
-                        Button {
-                            selectedTab = .map
-                            locateRequestID += 1
-                        } label: {
-                            Image(systemName: "location.fill")
-                        }
-                        .accessibilityLabel("Locate me")
-
-                        Button {
-                            Task { await viewModel.refresh() }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .accessibilityLabel("Refresh snapshots")
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        viewModel.isListSheetPresented = true
+                    } label: {
+                        Image(systemName: "list.bullet")
                     }
+                    .accessibilityLabel("Open cafe list")
+
+                    Button {
+                        viewModel.requestLocateUser()
+                    } label: {
+                        Image(systemName: "location.fill")
+                            .foregroundStyle(.blue)
+                    }
+                    .accessibilityLabel("Center on my location")
+
+                    Button {
+                        Task { await viewModel.refreshTapped() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .accessibilityLabel("Refresh")
                 }
             }
             .task {
-                await viewModel.loadIfNeeded()
-                viewModel.startAutoRefresh()
+                await viewModel.onAppear()
             }
-            .onDisappear {
-                viewModel.stopAutoRefresh()
-            }
-            .onChange(of: scenePhase) { _, newPhase in
-                switch newPhase {
+            .onChange(of: scenePhase) { _, phase in
+                switch phase {
                 case .active:
                     viewModel.startAutoRefresh()
                 default:
                     viewModel.stopAutoRefresh()
                 }
             }
-            .refreshable {
-                await viewModel.refresh()
-            }
-            .alert(
-                "Snapshot Error",
-                isPresented: Binding(
-                    get: { viewModel.errorMessage != nil },
-                    set: { isPresented in
-                        if !isPresented {
-                            viewModel.errorMessage = nil
-                        }
-                    }
-                )
-            ) {
-                Button("OK", role: .cancel) {
-                    viewModel.errorMessage = nil
+            .overlay {
+                if viewModel.isInitialLoading {
+                    loadingView
+                } else if let blockingError = viewModel.blockingError {
+                    blockingErrorView(message: blockingError)
                 }
-            } message: {
-                Text(viewModel.errorMessage ?? "Unknown error")
             }
             .sheet(item: $viewModel.selectedCafe) { cafe in
                 CafeDetailView(cafe: cafe)
                     .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
             }
-            .sheet(isPresented: $showFilters) {
-                filterSheet
-            }
-            .fullScreenCover(isPresented: $showFullMap) {
-                NavigationStack {
-                    CafeMapView(
-                        cafes: viewModel.filteredCafes,
-                        selectedCafe: $viewModel.selectedCafe,
-                        locateRequestID: locateRequestID
-                    ) {
-                        showLocationSettingsAlert = true
+            .sheet(isPresented: $viewModel.isListSheetPresented) {
+                ListSheetView(
+                    cafes: viewModel.visibleCafes,
+                    totalVisibleCount: viewModel.visibleCafes.count,
+                    onTapCafe: { cafe in
+                        viewModel.selectCafeFromList(cafe)
                     }
-                    .ignoresSafeArea(edges: .bottom)
-                    .navigationTitle("Full Map")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button("Close") {
-                                showFullMap = false
-                            }
-                        }
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button {
-                                locateRequestID += 1
-                            } label: {
-                                Image(systemName: "location.fill")
-                            }
-                        }
-                    }
-                }
+                )
+                .presentationDetents([.fraction(0.25), .medium, .large], selection: $listDetent)
+                .presentationBackgroundInteraction(.enabled)
+                .presentationDragIndicator(.visible)
+                .animation(.spring(response: 0.35, dampingFraction: 0.9), value: listDetent)
             }
-            .alert("Location Access Disabled", isPresented: $showLocationSettingsAlert) {
+            .sheet(isPresented: $viewModel.isFilterSheetPresented) {
+                FiltersSheetView(viewModel: viewModel)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+            .fullScreenCover(isPresented: $viewModel.isFullMapPresented) {
+                fullMapView
+            }
+            .alert("Location Access Needed", isPresented: $viewModel.showLocationSettingsPrompt) {
                 Button("Cancel", role: .cancel) {}
                 Button("Open Settings") {
                     if let url = URL(string: UIApplication.openSettingsURLString) {
@@ -141,186 +133,179 @@ struct ContentView: View {
                     }
                 }
             } message: {
-                Text("Enable location in iPhone Settings to center the map on your position.")
+                Text("Enable location access in Settings to center on your position.")
             }
         }
     }
 
-    private var summaryCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private var statsHeader: some View {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(viewModel.displayName(for: viewModel.selectedArea))
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(viewModel.areaTitle)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(viewModel.subtitleLine)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("\(viewModel.filteredCafes.count) cafes")
-                        .font(.subheadline)
-                    if let updated = viewModel.lastUpdatedText {
-                        Text(updated)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+
+                HStack(spacing: 8) {
+                    Button {
+                        Task { await viewModel.refreshTapped() }
+                    } label: {
+                        if viewModel.isRefreshing {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
                     }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Refresh cafes")
+
+                    Button {
+                        withAnimation(.spring(duration: 0.3)) {
+                            viewModel.isFullMapPresented = true
+                        }
+                    } label: {
+                        Label("Full Map", systemImage: "arrow.up.left.and.arrow.down.right")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
 
-            HStack {
-                Text("Time: \(viewModel.activeTimeSnapshot?.localTimeLabel ?? "Unknown")")
-                Spacer()
-                Text("\(viewModel.availableTimeSnapshots.count) forecast slots")
+            HStack(spacing: 12) {
+                bucketChip(
+                    bucket: .sunny,
+                    label: "Sunny \(viewModel.stats.sunny)",
+                    icon: "sun.max.fill",
+                    color: ThemeColor.sunnyGreen
+                )
+                bucketChip(
+                    bucket: .partial,
+                    label: "Partial \(viewModel.stats.partial)",
+                    icon: "sun.haze.fill",
+                    color: ThemeColor.partialAmber
+                )
+                bucketChip(
+                    bucket: .shaded,
+                    label: "Shaded \(viewModel.stats.shaded)",
+                    icon: "moon.fill",
+                    color: ThemeColor.shadedRed
+                )
             }
-            .font(.caption)
+
+            HStack {
+                Text("Cloud \(Int(viewModel.cloudCoverPct))%")
+                Spacer()
+                Text("Avg score \(viewModel.stats.averageScore)")
+            }
+            .font(.footnote)
             .foregroundStyle(.secondary)
-
-            if let snapshot = viewModel.activeTimeSnapshot {
-                HStack(spacing: 14) {
-                    Label("\(snapshot.summary.sunny) sunny", systemImage: "sun.max.fill")
-                        .foregroundStyle(ThemeColor.sun)
-                    Label("\(snapshot.summary.partial) partial", systemImage: "sun.haze.fill")
-                        .foregroundStyle(ThemeColor.coffee)
-                    Label("\(snapshot.summary.shaded) shaded", systemImage: "moon.stars.fill")
-                        .foregroundStyle(ThemeColor.shade)
-                }
-                .font(.caption)
-
-                HStack {
-                    Text("Cloud \(Int(snapshot.cloudCoverPct))%")
-                    Spacer()
-                    Text("Avg score \(Int(snapshot.summary.avgScore))")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
         }
-        .padding(14)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(16)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private var tabSection: some View {
-        TabView(selection: $selectedTab) {
-            mapCard
-                .tabItem { Label("Map", systemImage: "map.fill") }
-                .tag(AppTab.map)
+    private func bucketChip(bucket: SunnyBucketFilter, label: String, icon: String, color: Color) -> some View {
+        let isSelected = viewModel.filters.bucket == bucket
 
-            listCard
-                .tabItem { Label("List", systemImage: "list.bullet") }
-                .tag(AppTab.list)
+        return Button {
+            withAnimation(.spring(duration: 0.25)) {
+                viewModel.bucketChanged(bucket)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .foregroundStyle(isSelected ? .black : color)
+                Text(label)
+                    .foregroundStyle(isSelected ? .black : .primary)
+            }
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(isSelected ? color.opacity(0.88) : Color(.systemBackground).opacity(0.55)))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Filter \(bucket.title)")
     }
 
-    private var mapCard: some View {
-        ZStack(alignment: .topTrailing) {
-            CafeMapView(
-                cafes: viewModel.filteredCafes,
-                selectedCafe: $viewModel.selectedCafe,
-                locateRequestID: locateRequestID
-            ) {
-                showLocationSettingsAlert = true
+    private var loadingView: some View {
+        ZStack {
+            Color(.systemBackground).opacity(0.85)
+                .ignoresSafeArea()
+            VStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.large)
+                Text("Finding sunny cafes...")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-
-            Button {
-                showFullMap = true
-            } label: {
-                Label("Full Map", systemImage: "arrow.up.left.and.arrow.down.right")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(.ultraThinMaterial, in: Capsule())
-            }
-            .padding(10)
+            .padding(24)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-        .padding(.horizontal, 8)
     }
 
-    private var listCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Cafes")
-                .font(.headline)
-            if viewModel.filteredCafes.isEmpty {
-                Text("No cafes match this filter.")
+    private func blockingErrorView(message: String) -> some View {
+        ZStack {
+            Color(.systemBackground).opacity(0.9)
+                .ignoresSafeArea()
+            VStack(spacing: 14) {
+                Image(systemName: "wifi.exclamationmark")
+                    .font(.system(size: 28, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                List(viewModel.filteredCafes) { cafe in
-                    CafeRowView(cafe: cafe) {
-                        viewModel.selectedCafe = cafe
-                    }
-                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                    .listRowSeparator(.hidden)
+                Text("Could not load cafes")
+                    .font(.title3.weight(.semibold))
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 30)
+                Button("Retry") {
+                    Task { await viewModel.refreshTapped() }
                 }
-                .listStyle(.plain)
+                .buttonStyle(.borderedProminent)
             }
+            .padding(28)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .padding(24)
         }
-        .padding(10)
     }
 
-    private var filterSheet: some View {
+    private var fullMapView: some View {
         NavigationStack {
-            Form {
-                Section("Where & When") {
-                    Picker("Area", selection: $viewModel.selectedArea) {
-                        ForEach(viewModel.availableAreas) { area in
-                            Text(viewModel.displayName(for: area.area)).tag(area.area)
-                        }
-                    }
-                    .onChange(of: viewModel.selectedArea) { _, newValue in
-                        viewModel.didSelectArea(newValue)
-                    }
-
-                    Picker("Time", selection: $viewModel.selectedTimeUTC) {
-                        ForEach(viewModel.availableTimeSnapshots) { snapshot in
-                            Text(snapshot.localTimeLabel).tag(Optional(snapshot.timeUTC))
-                        }
-                    }
-                    .disabled(viewModel.availableTimeSnapshots.isEmpty)
-
-                    Button("Use Now") {
-                        viewModel.selectNow()
-                    }
-                }
-
-                Section("Filters") {
-                    Picker("Bucket", selection: $viewModel.selectedBucket) {
-                        ForEach(BucketFilter.allCases) { item in
-                            Text(item.title).tag(item)
-                        }
-                    }
-
-                    TextField("Search cafes", text: $viewModel.searchText)
-
-                    Toggle("Hide fully shaded", isOn: $viewModel.hideShaded)
-
-                    Picker("Sort", selection: $viewModel.sortOrder) {
-                        ForEach(SortOrder.allCases) { item in
-                            Text(item.title).tag(item)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("Min score")
-                            Spacer()
-                            Text("\(Int(viewModel.minScore))")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                        Slider(value: $viewModel.minScore, in: 0 ... 100, step: 1)
-                    }
-                }
-
-                Section {
-                    Button("Reset Filters") {
-                        viewModel.resetFilters()
-                    }
-                }
-            }
-            .navigationTitle("Filters")
+            CafeMapView(
+                cafes: viewModel.cafes,
+                selectedCafe: $viewModel.selectedCafe,
+                region: $viewModel.mapRegion,
+                locateRequestID: viewModel.locateUserRequestID,
+                onRegionChanged: { viewModel.mapRegionChanged($0) },
+                onSelectCafe: { viewModel.selectCafeFromMap($0) },
+                onPermissionDenied: { viewModel.locationPermissionDenied() }
+            )
+            .ignoresSafeArea(edges: .bottom)
+            .navigationTitle("Full Map")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
-                        showFilters = false
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") {
+                        viewModel.isFullMapPresented = false
+                    }
+                }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        viewModel.requestLocateUser()
+                    } label: {
+                        Image(systemName: "location.fill")
+                            .foregroundStyle(.blue)
+                    }
+                    Button {
+                        viewModel.isListSheetPresented = true
+                    } label: {
+                        Image(systemName: "list.bullet")
                     }
                 }
             }

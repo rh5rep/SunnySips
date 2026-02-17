@@ -1,87 +1,22 @@
 import Foundation
 import CoreLocation
+import MapKit
 
-struct SnapshotIndex: Codable {
-    let generatedAtUTC: String
-    let areas: [SnapshotAreaRef]
-
-    enum CodingKeys: String, CodingKey {
-        case generatedAtUTC = "generated_at_utc"
-        case areas
-    }
-}
-
-struct SnapshotAreaRef: Codable, Hashable, Identifiable {
-    let area: String
-    let file: String
-    let count: Int
-
-    var id: String { area }
-}
-
-struct AreaSnapshotFile: Codable {
-    let generatedAtUTC: String
-    let area: String
-    let bbox: [Double]
-    let snapshots: [TimeSnapshot]
-
-    enum CodingKeys: String, CodingKey {
-        case generatedAtUTC = "generated_at_utc"
-        case area
-        case bbox
-        case snapshots
-    }
-}
-
-struct TimeSnapshot: Codable, Hashable, Identifiable {
-    let timeUTC: String
-    let timeLocal: String
+struct SunnyResponse: Codable {
+    let time: Date
     let cloudCoverPct: Double
-    let summary: SnapshotSummary
-    let cafes: [CafeSnapshot]
+    let count: Int
+    let cafes: [SunnyCafe]
 
     enum CodingKeys: String, CodingKey {
-        case timeUTC = "time_utc"
-        case timeLocal = "time_local"
+        case time
         case cloudCoverPct = "cloud_cover_pct"
-        case summary
+        case count
         case cafes
     }
-
-    var id: String { timeUTC }
-
-    var localDate: Date? {
-        ISO8601DateFormatter.withFractionalSeconds.date(from: timeLocal) ??
-            ISO8601DateFormatter.internetDateTime.date(from: timeLocal) ??
-            ISO8601DateFormatter.withFractionalSeconds.date(from: timeUTC) ??
-            ISO8601DateFormatter.internetDateTime.date(from: timeUTC)
-    }
-
-    var localTimeLabel: String {
-        guard let localDate else {
-            return timeLocal
-        }
-        return DateFormatter.localTime.string(from: localDate)
-    }
 }
 
-struct SnapshotSummary: Codable, Hashable {
-    let total: Int
-    let sunny: Int
-    let partial: Int
-    let shaded: Int
-    let avgScore: Double
-
-    enum CodingKeys: String, CodingKey {
-        case total
-        case sunny
-        case partial
-        case shaded
-        case avgScore = "avg_score"
-    }
-}
-
-struct CafeSnapshot: Codable, Hashable, Identifiable {
+struct SunnyCafe: Codable, Identifiable, Hashable {
     let osmID: Int?
     let name: String
     let lon: Double
@@ -92,7 +27,6 @@ struct CafeSnapshot: Codable, Hashable, Identifiable {
     let sunElevationDeg: Double
     let sunAzimuthDeg: Double
     let cloudCoverPct: Double?
-    let bucket: String?
 
     enum CodingKeys: String, CodingKey {
         case osmID = "osm_id"
@@ -105,7 +39,6 @@ struct CafeSnapshot: Codable, Hashable, Identifiable {
         case sunElevationDeg = "sun_elevation_deg"
         case sunAzimuthDeg = "sun_azimuth_deg"
         case cloudCoverPct = "cloud_cover_pct"
-        case bucket
     }
 
     var id: String {
@@ -119,13 +52,206 @@ struct CafeSnapshot: Codable, Hashable, Identifiable {
         CLLocationCoordinate2D(latitude: lat, longitude: lon)
     }
 
-    var resolvedBucket: String {
-        if let bucket {
-            return bucket
+    var sunnyPercent: Int {
+        Int((sunnyFraction * 100).rounded())
+    }
+
+    var bucket: SunnyBucket {
+        if sunnyFraction >= 0.99 { return .sunny }
+        if sunnyFraction <= 0.01 { return .shaded }
+        return .partial
+    }
+}
+
+enum SunnyBucket: String, CaseIterable, Identifiable {
+    case sunny
+    case partial
+    case shaded
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .sunny: return "Sunny"
+        case .partial: return "Partial"
+        case .shaded: return "Shaded"
         }
-        if sunnyFraction >= 0.99 { return "sunny" }
-        if sunnyFraction <= 0.01 { return "shaded" }
-        return "partial"
+    }
+}
+
+enum SunnyBucketFilter: String, CaseIterable, Identifiable {
+    case all
+    case sunny
+    case partial
+    case shaded
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "All"
+        case .sunny: return "Sunny"
+        case .partial: return "Partial"
+        case .shaded: return "Shaded"
+        }
+    }
+
+    func matches(_ cafe: SunnyCafe) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .sunny:
+            return cafe.bucket == .sunny
+        case .partial:
+            return cafe.bucket == .partial
+        case .shaded:
+            return cafe.bucket == .shaded
+        }
+    }
+}
+
+enum SunnySortOption: String, CaseIterable, Identifiable {
+    case bestScore
+    case mostSunny
+    case nameAZ
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .bestScore: return "Best Score"
+        case .mostSunny: return "Most Sunny"
+        case .nameAZ: return "Name A-Z"
+        }
+    }
+}
+
+struct BoundingBox: Equatable {
+    let minLon: Double
+    let minLat: Double
+    let maxLon: Double
+    let maxLat: Double
+
+    var center: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(
+            latitude: (minLat + maxLat) * 0.5,
+            longitude: (minLon + maxLon) * 0.5
+        )
+    }
+
+    var span: MKCoordinateSpan {
+        MKCoordinateSpan(
+            latitudeDelta: max((maxLat - minLat) * 1.15, 0.01),
+            longitudeDelta: max((maxLon - minLon) * 1.15, 0.01)
+        )
+    }
+
+    var region: MKCoordinateRegion {
+        MKCoordinateRegion(center: center, span: span)
+    }
+}
+
+enum SunnyArea: String, CaseIterable, Identifiable {
+    case coreCopenhagen = "core-cph"
+    case indreBy = "indre-by"
+    case norrebro = "norrebro"
+    case frederiksberg = "frederiksberg"
+    case osterbro = "osterbro"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .coreCopenhagen: return "Core Copenhagen"
+        case .indreBy: return "Indre By"
+        case .norrebro: return "Nørrebro"
+        case .frederiksberg: return "Frederiksberg"
+        case .osterbro: return "Østerbro"
+        }
+    }
+
+    var bbox: BoundingBox {
+        switch self {
+        case .coreCopenhagen:
+            return BoundingBox(minLon: 12.500, minLat: 55.660, maxLon: 12.640, maxLat: 55.730)
+        case .indreBy:
+            return BoundingBox(minLon: 12.560, minLat: 55.675, maxLon: 12.600, maxLat: 55.695)
+        case .norrebro:
+            return BoundingBox(minLon: 12.520, minLat: 55.680, maxLon: 12.590, maxLat: 55.720)
+        case .frederiksberg:
+            return BoundingBox(minLon: 12.500, minLat: 55.660, maxLon: 12.560, maxLat: 55.700)
+        case .osterbro:
+            return BoundingBox(minLon: 12.560, minLat: 55.690, maxLon: 12.640, maxLat: 55.730)
+        }
+    }
+}
+
+struct SunnyStatsSummary {
+    let total: Int
+    let sunny: Int
+    let partial: Int
+    let shaded: Int
+    let averageScore: Int
+
+    static let empty = SunnyStatsSummary(total: 0, sunny: 0, partial: 0, shaded: 0, averageScore: 0)
+}
+
+struct SunnyFilters {
+    var area: SunnyArea = .coreCopenhagen
+    var useNow: Bool = true
+    var selectedTime: Date = Date().roundedToQuarterHour()
+    var bucket: SunnyBucketFilter = .sunny
+    var minScore: Double = 0
+    var searchText: String = ""
+    var sort: SunnySortOption = .bestScore
+}
+
+extension Date {
+    static var copenhagenCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Copenhagen") ?? .current
+        return calendar
+    }
+
+    static var todayRange: ClosedRange<Date> {
+        let cal = Date.copenhagenCalendar
+        let now = Date()
+        let start = cal.startOfDay(for: now)
+        let end = cal.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) ?? now
+        return start ... end
+    }
+
+    func roundedToQuarterHour() -> Date {
+        let interval: TimeInterval = 15 * 60
+        let rounded = (timeIntervalSince1970 / interval).rounded() * interval
+        return Date(timeIntervalSince1970: rounded)
+    }
+
+    func clampedToToday() -> Date {
+        let range = Date.todayRange
+        if self < range.lowerBound { return range.lowerBound.roundedToQuarterHour() }
+        if self > range.upperBound { return range.upperBound.roundedToQuarterHour() }
+        return roundedToQuarterHour()
+    }
+}
+
+extension MKCoordinateRegion {
+    func contains(_ coordinate: CLLocationCoordinate2D) -> Bool {
+        let latDelta = span.latitudeDelta * 0.5
+        let lonDelta = span.longitudeDelta * 0.5
+        let minLat = center.latitude - latDelta
+        let maxLat = center.latitude + latDelta
+        let minLon = center.longitude - lonDelta
+        let maxLon = center.longitude + lonDelta
+        return coordinate.latitude >= minLat && coordinate.latitude <= maxLat &&
+            coordinate.longitude >= minLon && coordinate.longitude <= maxLon
+    }
+
+    func approximatelyEquals(_ other: MKCoordinateRegion, tolerance: Double = 0.0005) -> Bool {
+        abs(center.latitude - other.center.latitude) < tolerance &&
+            abs(center.longitude - other.center.longitude) < tolerance &&
+            abs(span.latitudeDelta - other.span.latitudeDelta) < tolerance &&
+            abs(span.longitudeDelta - other.span.longitudeDelta) < tolerance
     }
 }
 
@@ -139,15 +265,6 @@ extension ISO8601DateFormatter {
     static let internetDateTime: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
-}
-
-extension DateFormatter {
-    static let localTime: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
         return formatter
     }()
 }

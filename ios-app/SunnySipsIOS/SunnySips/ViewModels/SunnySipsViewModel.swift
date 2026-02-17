@@ -1,207 +1,76 @@
 import Foundation
-
-enum BucketFilter: String, CaseIterable, Identifiable {
-    case all
-    case sunny
-    case partial
-    case shaded
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .all: return "All"
-        case .sunny: return "Sunny"
-        case .partial: return "Partial"
-        case .shaded: return "Shaded"
-        }
-    }
-
-    func matches(_ cafe: CafeSnapshot) -> Bool {
-        if self == .all {
-            return true
-        }
-        return cafe.resolvedBucket == rawValue
-    }
-}
-
-enum SortOrder: String, CaseIterable, Identifiable {
-    case score
-    case name
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .score: return "Best Score"
-        case .name: return "Name"
-        }
-    }
-}
+import MapKit
+import UIKit
+import SwiftUI
 
 @MainActor
 final class SunnySipsViewModel: ObservableObject {
-    @Published var isLoading = false
+    @Published private(set) var cafes: [SunnyCafe] = []
+    @Published private(set) var visibleCafes: [SunnyCafe] = []
+    @Published private(set) var stats: SunnyStatsSummary = .empty
+    @Published private(set) var cloudCoverPct: Double = 0
+    @Published private(set) var updatedAt: Date?
+    @Published private(set) var usingCachedData = false
+
+    @Published var selectedCafe: SunnyCafe?
+    @Published var mapRegion: MKCoordinateRegion = SunnyArea.coreCopenhagen.bbox.region
+    @Published var visibleRegion: MKCoordinateRegion = SunnyArea.coreCopenhagen.bbox.region
+
+    @Published var filters = SunnyFilters()
+
+    @Published var isInitialLoading = true
+    @Published var isRefreshing = false
+    @Published var isFilterSheetPresented = false
+    @Published var isListSheetPresented = true
+    @Published var isFullMapPresented = false
+    @Published var showLocationSettingsPrompt = false
     @Published var errorMessage: String?
-    @Published var snapshotIndex: SnapshotIndex?
-    @Published var areaSnapshot: AreaSnapshotFile?
 
-    @Published var selectedArea: String = AppConfig.defaultArea
-    @Published var selectedTimeUTC: String?
-    @Published var selectedBucket: BucketFilter = .all
-    @Published var minScore: Double = 0
-    @Published var searchText = ""
-    @Published var hideShaded = false
-    @Published var sortOrder: SortOrder = .score
-    @Published var selectedCafe: CafeSnapshot?
+    @Published var locateUserRequestID = 0
 
-    private let service = SnapshotService()
+    private let apiService = SunnyAPIService()
+    private var allCafes: [SunnyCafe] = []
     private var hasLoaded = false
+    private var searchTask: Task<Void, Never>?
     private var autoRefreshTask: Task<Void, Never>?
 
-    var availableAreas: [SnapshotAreaRef] {
-        (snapshotIndex?.areas ?? []).sorted { $0.area < $1.area }
+    var areaTitle: String { filters.area.title }
+
+    var subtitleLine: String {
+        let count = cafes.count
+        let relative = updatedRelativeText
+        return "\(count) cafes • \(relative)"
     }
 
-    var availableTimeSnapshots: [TimeSnapshot] {
-        areaSnapshot?.snapshots ?? []
-    }
-
-    var activeTimeSnapshot: TimeSnapshot? {
-        let snapshots = availableTimeSnapshots
-        guard !snapshots.isEmpty else { return nil }
-        if let selectedTimeUTC,
-           let matched = snapshots.first(where: { $0.timeUTC == selectedTimeUTC }) {
-            return matched
-        }
-        return snapshots.first
-    }
-
-    var filteredCafes: [CafeSnapshot] {
-        guard let cafes = activeTimeSnapshot?.cafes else { return [] }
-        let filtered = cafes
-            .filter { selectedBucket.matches($0) }
-            .filter { !hideShaded || $0.resolvedBucket != "shaded" }
-            .filter { $0.sunnyScore >= minScore }
-            .filter { cafe in
-                let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if query.isEmpty { return true }
-                return cafe.name.localizedCaseInsensitiveContains(query)
-            }
-
-        switch sortOrder {
-        case .score:
-            return filtered.sorted { lhs, rhs in
-                if lhs.sunnyScore != rhs.sunnyScore {
-                    return lhs.sunnyScore > rhs.sunnyScore
-                }
-                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-            }
-        case .name:
-            return filtered.sorted {
-                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
-        }
-    }
-
-    var lastUpdatedText: String? {
-        guard let raw = areaSnapshot?.generatedAtUTC else { return nil }
-        guard let date = Self.parseISO(raw) else { return nil }
+    var updatedRelativeText: String {
+        guard let updatedAt else { return "Not updated" }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
-        return "Updated \(formatter.localizedString(for: date, relativeTo: Date()))"
+        return "Updated \(formatter.localizedString(for: updatedAt, relativeTo: Date()))"
     }
 
-    func displayName(for area: String) -> String {
-        switch area {
-        case "core-cph": return "Core Copenhagen"
-        case "indre-by": return "Indre By"
-        case "norrebro": return "Norrebro"
-        case "frederiksberg": return "Frederiksberg"
-        case "osterbro": return "Osterbro"
-        default:
-            return area
-                .replacingOccurrences(of: "-", with: " ")
-                .capitalized
-        }
+    var blockingError: String? {
+        guard allCafes.isEmpty else { return nil }
+        return errorMessage
     }
 
-    func loadIfNeeded() async {
+    func onAppear() async {
         guard !hasLoaded else { return }
         hasLoaded = true
-        await refresh()
+        mapRegion = filters.area.bbox.region
+        visibleRegion = mapRegion
+        await reloadFromAPI()
+        startAutoRefresh()
     }
 
-    func refresh() async {
-        if isLoading { return }
-        isLoading = true
-        errorMessage = nil
-        do {
-            let index = try await service.fetchIndex(baseURL: AppConfig.snapshotBaseURL)
-            snapshotIndex = index
-
-            if !index.areas.contains(where: { $0.area == selectedArea }),
-               let firstArea = index.areas.first?.area {
-                selectedArea = firstArea
-            }
-            try await loadAreaSnapshot(for: selectedArea)
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        isLoading = false
-    }
-
-    func loadAreaSnapshot(for area: String) async throws {
-        guard let areaRef = snapshotIndex?.areas.first(where: { $0.area == area }) else {
-            areaSnapshot = nil
-            selectedTimeUTC = nil
-            return
-        }
-        let previousSelection = selectedTimeUTC
-        let snapshot = try await service.fetchAreaSnapshot(
-            fileName: areaRef.file,
-            baseURL: AppConfig.snapshotBaseURL
-        )
-        areaSnapshot = snapshot
-        if let previousSelection,
-           snapshot.snapshots.contains(where: { $0.timeUTC == previousSelection }) {
-            selectedTimeUTC = previousSelection
-        } else {
-            selectedTimeUTC = snapshot.snapshots.first?.timeUTC
-        }
-        selectedCafe = nil
-    }
-
-    func didSelectArea(_ area: String) {
-        Task {
-            do {
-                try await loadAreaSnapshot(for: area)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-
-    func selectNow() {
-        selectedTimeUTC = availableTimeSnapshots.first?.timeUTC
-    }
-
-    func resetFilters() {
-        selectedBucket = .all
-        minScore = 0
-        searchText = ""
-        hideShaded = false
-        sortOrder = .score
-    }
-
-    func startAutoRefresh(every seconds: TimeInterval = 180) {
+    func startAutoRefresh(every seconds: TimeInterval = 300) {
         guard autoRefreshTask == nil else { return }
-        autoRefreshTask = Task {
+        autoRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                let delay = UInt64(max(seconds, 30) * 1_000_000_000)
-                try? await Task.sleep(nanoseconds: delay)
-                if Task.isCancelled { break }
-                await refresh()
+                let ns = UInt64(max(seconds, 60) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: ns)
+                guard let self, !Task.isCancelled else { break }
+                await self.reloadFromAPI(silent: true)
             }
         }
     }
@@ -211,10 +80,195 @@ final class SunnySipsViewModel: ObservableObject {
         autoRefreshTask = nil
     }
 
-    private static func parseISO(_ value: String) -> Date? {
-        if let d = ISO8601DateFormatter.withFractionalSeconds.date(from: value) {
-            return d
+    func refreshTapped() async {
+        await reloadFromAPI()
+    }
+
+    func resetFilters() {
+        filters.bucket = .sunny
+        filters.minScore = 0
+        filters.searchText = ""
+        filters.sort = .bestScore
+        applyLocalFilters()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    func areaChanged(_ area: SunnyArea) {
+        filters.area = area
+        withAnimation(.spring(duration: 0.35)) {
+            mapRegion = area.bbox.region
         }
-        return ISO8601DateFormatter.internetDateTime.date(from: value)
+        Task { await reloadFromAPI() }
+    }
+
+    func useNowChanged(_ useNow: Bool) {
+        filters.useNow = useNow
+        if useNow {
+            Task { await reloadFromAPI() }
+        } else {
+            filters.selectedTime = filters.selectedTime.clampedToToday().roundedToQuarterHour()
+            Task { await reloadFromAPI() }
+        }
+    }
+
+    func timeChanged(_ date: Date) {
+        let rounded = date.clampedToToday().roundedToQuarterHour()
+        if rounded != filters.selectedTime {
+            filters.selectedTime = rounded
+        }
+        guard !filters.useNow else { return }
+        Task { await reloadFromAPI() }
+    }
+
+    func bucketChanged(_ bucket: SunnyBucketFilter) {
+        filters.bucket = bucket
+        applyLocalFilters()
+    }
+
+    func minScoreChanged(_ value: Double) {
+        filters.minScore = value
+        applyLocalFilters()
+    }
+
+    func sortChanged(_ sort: SunnySortOption) {
+        filters.sort = sort
+        applyLocalFilters()
+    }
+
+    func searchChanged(_ text: String) {
+        filters.searchText = text
+        searchTask?.cancel()
+        searchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.applyLocalFilters()
+        }
+    }
+
+    func mapRegionChanged(_ region: MKCoordinateRegion) {
+        visibleRegion = region
+        visibleCafes = cafes.filter { region.contains($0.coordinate) }
+    }
+
+    func selectCafeFromList(_ cafe: SunnyCafe) {
+        withAnimation(.spring(duration: 0.35)) {
+            mapRegion = MKCoordinateRegion(
+                center: cafe.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.008, longitudeDelta: 0.008)
+            )
+        }
+        selectedCafe = cafe
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    func selectCafeFromMap(_ cafe: SunnyCafe) {
+        selectedCafe = cafe
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+    }
+
+    func requestLocateUser() {
+        locateUserRequestID += 1
+    }
+
+    func locationPermissionDenied() {
+        showLocationSettingsPrompt = true
+    }
+
+    private func reloadFromAPI(silent: Bool = false) async {
+        if silent {
+            isRefreshing = true
+        } else {
+            isInitialLoading = allCafes.isEmpty
+            isRefreshing = !isInitialLoading
+        }
+        errorMessage = nil
+
+        do {
+            let requestedTime = filters.useNow ? nil : filters.selectedTime
+            let result = try await apiService.fetchSunny(area: filters.area, requestedTime: requestedTime)
+            usingCachedData = result.fromCache
+            updatedAt = result.fetchedAt
+            cloudCoverPct = result.response.cloudCoverPct
+            allCafes = result.response.cafes
+
+            if result.fromCache {
+                errorMessage = "Offline mode: showing cached cafes."
+            }
+
+            applyLocalFilters()
+        } catch {
+            if allCafes.isEmpty {
+                errorMessage = error.localizedDescription
+            } else {
+                errorMessage = "Could not refresh right now. Showing previous data."
+            }
+        }
+
+        isInitialLoading = false
+        isRefreshing = false
+    }
+
+    private func applyLocalFilters() {
+        let search = filters.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var filtered = allCafes
+            .filter { filters.bucket.matches($0) }
+            .filter { $0.sunnyScore >= filters.minScore }
+
+        if !search.isEmpty {
+            filtered = filtered.filter { $0.name.localizedCaseInsensitiveContains(search) }
+        }
+
+        switch filters.sort {
+        case .bestScore:
+            filtered.sort {
+                if $0.sunnyScore != $1.sunnyScore {
+                    return $0.sunnyScore > $1.sunnyScore
+                }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        case .mostSunny:
+            filtered.sort {
+                if $0.sunnyFraction != $1.sunnyFraction {
+                    return $0.sunnyFraction > $1.sunnyFraction
+                }
+                return $0.sunnyScore > $1.sunnyScore
+            }
+        case .nameAZ:
+            filtered.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+
+        cafes = filtered
+        visibleCafes = cafes.filter { visibleRegion.contains($0.coordinate) }
+        stats = summarize(allCafes)
+
+        if let selectedCafe, !cafes.contains(selectedCafe) {
+            self.selectedCafe = nil
+        }
+    }
+
+    private func summarize(_ cafes: [SunnyCafe]) -> SunnyStatsSummary {
+        guard !cafes.isEmpty else { return .empty }
+
+        var sunny = 0
+        var partial = 0
+        var shaded = 0
+        var scoreSum = 0.0
+
+        for cafe in cafes {
+            switch cafe.bucket {
+            case .sunny: sunny += 1
+            case .partial: partial += 1
+            case .shaded: shaded += 1
+            }
+            scoreSum += cafe.sunnyScore
+        }
+
+        return SunnyStatsSummary(
+            total: cafes.count,
+            sunny: sunny,
+            partial: partial,
+            shaded: shaded,
+            averageScore: Int((scoreSum / Double(cafes.count)).rounded())
+        )
     }
 }

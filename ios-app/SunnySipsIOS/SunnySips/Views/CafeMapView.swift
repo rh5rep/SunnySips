@@ -1,125 +1,320 @@
 import SwiftUI
 import MapKit
-import Combine
+import CoreLocation
 
-struct CafeMapView: View {
-    let cafes: [CafeSnapshot]
-    @Binding var selectedCafe: CafeSnapshot?
+struct CafeMapView: UIViewRepresentable {
+    let cafes: [SunnyCafe]
+    @Binding var selectedCafe: SunnyCafe?
+    @Binding var region: MKCoordinateRegion
     let locateRequestID: Int
-    var onPermissionDenied: () -> Void = {}
+    var onRegionChanged: (MKCoordinateRegion) -> Void
+    var onSelectCafe: (SunnyCafe) -> Void
+    var onPermissionDenied: () -> Void
 
-    @State private var position: MapCameraPosition = .automatic
-    @StateObject private var locationService = LocationService()
-    @State private var pendingCenterOnUser = false
-    @State private var didNotifyPermissionDenied = false
-    @Namespace private var mapScope
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
 
-    var body: some View {
-        Map(position: $position, selection: $selectedCafe) {
-            UserAnnotation()
-            ForEach(cafes) { cafe in
-                Marker(cafe.name, coordinate: cafe.coordinate)
-                    .tint(markerColor(for: cafe))
-                    .tag(cafe)
-            }
+    func makeUIView(context: Context) -> MKMapView {
+        let mapView = MKMapView(frame: .zero)
+        context.coordinator.mapView = mapView
+        mapView.delegate = context.coordinator
+        mapView.register(CafeAnnotationView.self, forAnnotationViewWithReuseIdentifier: CafeAnnotationView.reuseIdentifier)
+        mapView.register(CafeClusterAnnotationView.self, forAnnotationViewWithReuseIdentifier: CafeClusterAnnotationView.reuseIdentifier)
+        mapView.showsUserLocation = true
+        mapView.pointOfInterestFilter = .excludingAll
+        mapView.setRegion(region, animated: false)
+        context.coordinator.applyAnnotations(to: mapView, cafes: cafes)
+        return mapView
+    }
+
+    func updateUIView(_ mapView: MKMapView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.applyAnnotations(to: mapView, cafes: cafes)
+
+        if locateRequestID != context.coordinator.lastLocateRequestID {
+            context.coordinator.lastLocateRequestID = locateRequestID
+            context.coordinator.centerOnUser(in: mapView)
         }
-        .mapStyle(.standard(elevation: .realistic))
-        .mapScope(mapScope)
-        .mapControls {
-            MapCompass(scope: mapScope)
-            MapScaleView(scope: mapScope)
-            MapUserLocationButton(scope: mapScope)
+
+        if !mapView.region.approximatelyEquals(region) {
+            context.coordinator.isProgrammaticRegionChange = true
+            mapView.setRegion(region, animated: true)
         }
-        .onAppear {
-            fitToCafes(cafes)
-            locationService.requestPermissionAndLocate()
-        }
-        .onChange(of: cafes) { _, newValue in
-            fitToCafes(newValue)
-        }
-        .onChange(of: locateRequestID) { _, _ in
-            pendingCenterOnUser = true
-            locationService.requestPermissionAndLocate()
-            handleAuthorizationChange(locationService.authorizationStatus)
-            if let current = locationService.location {
-                centerOn(current.coordinate)
-                pendingCenterOnUser = false
-            }
-        }
-        .onChange(of: locationService.authorizationStatus) { _, status in
-            handleAuthorizationChange(status)
-        }
-        .onReceive(locationService.$location.compactMap { $0 }) { newLocation in
-            guard pendingCenterOnUser else { return }
-            centerOn(newLocation.coordinate)
-            pendingCenterOnUser = false
+
+        if let selectedCafe,
+           let annotation = context.coordinator.annotationsByID[selectedCafe.id],
+           ((mapView.selectedAnnotations.first as? CafePointAnnotation)?.id != selectedCafe.id) {
+            mapView.selectAnnotation(annotation, animated: true)
         }
     }
 
-    private func markerColor(for cafe: CafeSnapshot) -> Color {
-        switch cafe.resolvedBucket {
-        case "sunny":
-            return ThemeColor.sun
-        case "partial":
-            return ThemeColor.coffee
-        default:
-            return ThemeColor.shade
-        }
-    }
+    final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate {
+        var parent: CafeMapView
+        weak var mapView: MKMapView?
+        var annotationsByID: [String: CafePointAnnotation] = [:]
+        var isProgrammaticRegionChange = false
+        var lastLocateRequestID: Int = -1
 
-    private func fitToCafes(_ cafes: [CafeSnapshot]) {
-        guard !cafes.isEmpty else { return }
-        var minLat = cafes[0].lat
-        var maxLat = cafes[0].lat
-        var minLon = cafes[0].lon
-        var maxLon = cafes[0].lon
+        private let locationManager = CLLocationManager()
+        private var lastLocationRequestAt: Date?
 
-        for cafe in cafes {
-            minLat = min(minLat, cafe.lat)
-            maxLat = max(maxLat, cafe.lat)
-            minLon = min(minLon, cafe.lon)
-            maxLon = max(maxLon, cafe.lon)
+        init(parent: CafeMapView) {
+            self.parent = parent
+            super.init()
+            locationManager.delegate = self
+            locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         }
 
-        let latPadding = max((maxLat - minLat) * 0.2, 0.005)
-        let lonPadding = max((maxLon - minLon) * 0.2, 0.005)
-        let center = CLLocationCoordinate2D(
-            latitude: (minLat + maxLat) / 2.0,
-            longitude: (minLon + maxLon) / 2.0
-        )
+        func applyAnnotations(to mapView: MKMapView, cafes: [SunnyCafe]) {
+            let incomingIDs = Set(cafes.map(\.id))
+            var toRemove: [CafePointAnnotation] = []
 
-        let region = MKCoordinateRegion(
-            center: center,
-            span: MKCoordinateSpan(
-                latitudeDelta: (maxLat - minLat) + latPadding,
-                longitudeDelta: (maxLon - minLon) + lonPadding
+            for (id, existing) in annotationsByID where !incomingIDs.contains(id) {
+                toRemove.append(existing)
+                annotationsByID.removeValue(forKey: id)
+            }
+            if !toRemove.isEmpty {
+                mapView.removeAnnotations(toRemove)
+            }
+
+            var toAdd: [CafePointAnnotation] = []
+            for cafe in cafes {
+                if let existing = annotationsByID[cafe.id] {
+                    existing.update(with: cafe)
+                    if let view = mapView.view(for: existing) as? CafeAnnotationView {
+                        view.apply(cafe: cafe)
+                    }
+                } else {
+                    let annotation = CafePointAnnotation(cafe: cafe)
+                    annotationsByID[cafe.id] = annotation
+                    toAdd.append(annotation)
+                }
+            }
+
+            if !toAdd.isEmpty {
+                mapView.addAnnotations(toAdd)
+            }
+        }
+
+        func centerOnUser(in mapView: MKMapView) {
+            switch locationManager.authorizationStatus {
+            case .notDetermined:
+                locationManager.requestWhenInUseAuthorization()
+            case .authorizedAlways, .authorizedWhenInUse:
+                if let location = mapView.userLocation.location {
+                    let region = MKCoordinateRegion(
+                        center: location.coordinate,
+                        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                    )
+                    isProgrammaticRegionChange = true
+                    mapView.setRegion(region, animated: true)
+                } else {
+                    requestLocationIfNeeded()
+                }
+            case .denied, .restricted:
+                DispatchQueue.main.async { self.parent.onPermissionDenied() }
+            @unknown default:
+                break
+            }
+        }
+
+        private func requestLocationIfNeeded() {
+            let now = Date()
+            if let last = lastLocationRequestAt, now.timeIntervalSince(last) < 1.0 {
+                return
+            }
+            lastLocationRequestAt = now
+            locationManager.requestLocation()
+        }
+
+        func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+            if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse {
+                requestLocationIfNeeded()
+            }
+        }
+
+        func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+            guard let mapView, let location = locations.last else { return }
+            let newRegion = MKCoordinateRegion(
+                center: location.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
             )
-        )
-        position = .region(region)
-    }
-
-    private func centerOn(_ coordinate: CLLocationCoordinate2D) {
-        let region = MKCoordinateRegion(
-            center: coordinate,
-            span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-        )
-        position = .region(region)
-    }
-
-    private func handleAuthorizationChange(_ status: CLAuthorizationStatus) {
-        switch status {
-        case .authorizedAlways, .authorizedWhenInUse:
-            didNotifyPermissionDenied = false
-        case .denied, .restricted:
-            if !didNotifyPermissionDenied {
-                didNotifyPermissionDenied = true
-                pendingCenterOnUser = false
-                onPermissionDenied()
-            }
-        case .notDetermined:
-            break
-        @unknown default:
-            break
+            isProgrammaticRegionChange = true
+            mapView.setRegion(newRegion, animated: true)
         }
+
+        func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+            _ = error
+        }
+
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if annotation is MKUserLocation {
+                return nil
+            }
+
+            if let cluster = annotation as? MKClusterAnnotation {
+                let view = mapView.dequeueReusableAnnotationView(
+                    withIdentifier: CafeClusterAnnotationView.reuseIdentifier,
+                    for: cluster
+                ) as! CafeClusterAnnotationView
+                view.configure(count: cluster.memberAnnotations.count)
+                return view
+            }
+
+            guard let cafeAnnotation = annotation as? CafePointAnnotation else {
+                return nil
+            }
+
+            let view = mapView.dequeueReusableAnnotationView(
+                withIdentifier: CafeAnnotationView.reuseIdentifier,
+                for: cafeAnnotation
+            ) as! CafeAnnotationView
+            view.apply(cafe: cafeAnnotation.cafe)
+            return view
+        }
+
+        func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+            if let cluster = view.annotation as? MKClusterAnnotation {
+                let rect = cluster.memberAnnotations.reduce(MKMapRect.null) { partial, ann in
+                    partial.union(MKMapRect(origin: MKMapPoint(ann.coordinate), size: MKMapSize(width: 0, height: 0)))
+                }
+                mapView.setVisibleMapRect(
+                    rect,
+                    edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 80, right: 40),
+                    animated: true
+                )
+                return
+            }
+
+            guard let cafeAnnotation = view.annotation as? CafePointAnnotation else {
+                return
+            }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            DispatchQueue.main.async {
+                self.parent.selectedCafe = cafeAnnotation.cafe
+                self.parent.onSelectCafe(cafeAnnotation.cafe)
+            }
+        }
+
+        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            let region = mapView.region
+            let wasProgrammatic = isProgrammaticRegionChange
+            isProgrammaticRegionChange = false
+
+            DispatchQueue.main.async {
+                self.parent.region = region
+                self.parent.onRegionChanged(region)
+            }
+
+            if wasProgrammatic {
+                return
+            }
+        }
+    }
+}
+
+final class CafePointAnnotation: NSObject, MKAnnotation {
+    let id: String
+    private(set) var cafe: SunnyCafe
+    dynamic var coordinate: CLLocationCoordinate2D
+
+    init(cafe: SunnyCafe) {
+        self.id = cafe.id
+        self.cafe = cafe
+        self.coordinate = cafe.coordinate
+        super.init()
+    }
+
+    func update(with cafe: SunnyCafe) {
+        self.cafe = cafe
+        self.coordinate = cafe.coordinate
+    }
+
+    var title: String? { cafe.name }
+}
+
+final class CafeAnnotationView: MKAnnotationView {
+    static let reuseIdentifier = "CafeAnnotationView"
+
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        clusteringIdentifier = "sunny-cafe"
+        collisionMode = .circle
+        displayPriority = .defaultHigh
+        canShowCallout = false
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var isSelected: Bool {
+        didSet {
+            layer.borderWidth = isSelected ? 2.0 : 0.0
+            layer.borderColor = UIColor.white.cgColor
+            alpha = isSelected ? 0.95 : 0.88
+        }
+    }
+
+    func apply(cafe: SunnyCafe) {
+        let radius: CGFloat
+        if cafe.bucket == .sunny {
+            radius = 14
+        } else if cafe.bucket == .shaded {
+            radius = 10
+        } else {
+            radius = 12
+        }
+
+        frame = CGRect(x: 0, y: 0, width: radius * 2, height: radius * 2)
+        layer.cornerRadius = radius
+        layer.backgroundColor = UIColor.markerColor(for: cafe.sunnyFraction).cgColor
+        alpha = isSelected ? 0.95 : 0.88
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.15
+        layer.shadowRadius = 2
+        layer.shadowOffset = CGSize(width: 0, height: 1)
+
+        isAccessibilityElement = true
+        accessibilityLabel = "\(cafe.name), \(cafe.sunnyPercent) percent sunny, score \(Int(cafe.sunnyScore))"
+        accessibilityHint = "Double tap for cafe details."
+    }
+}
+
+final class CafeClusterAnnotationView: MKAnnotationView {
+    static let reuseIdentifier = "CafeClusterAnnotationView"
+
+    private let label = UILabel()
+
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        frame = CGRect(x: 0, y: 0, width: 34, height: 34)
+        layer.cornerRadius = 17
+        layer.backgroundColor = UIColor.systemGray3.withAlphaComponent(0.92).cgColor
+        layer.borderWidth = 1
+        layer.borderColor = UIColor.white.withAlphaComponent(0.75).cgColor
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.12
+        layer.shadowOffset = CGSize(width: 0, height: 1)
+        layer.shadowRadius = 2
+
+        label.frame = bounds
+        label.textAlignment = .center
+        label.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = .label
+        addSubview(label)
+
+        isAccessibilityElement = true
+        accessibilityHint = "Double tap to zoom into this cluster."
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(count: Int) {
+        label.text = "\(count)"
+        accessibilityLabel = "\(count) cafes clustered"
     }
 }

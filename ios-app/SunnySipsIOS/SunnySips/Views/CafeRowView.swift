@@ -1,59 +1,47 @@
 import SwiftUI
 
 struct CafeRowView: View {
-    let cafe: CafeSnapshot
+    let cafe: SunnyCafe
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(spacing: 12) {
                 Circle()
-                    .fill(bucketColor)
+                    .fill(markerColor)
                     .frame(width: 10, height: 10)
-                    .padding(.top, 5)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(cafe.name)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.headline)
                         .foregroundStyle(.primary)
-                    HStack(spacing: 10) {
-                        Text(bucketTitle)
-                        Text("Sun \(Int(cafe.sunnyFraction * 100))%")
-                        Text("Score \(Int(cafe.sunnyScore))")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    Text("Sunny \(cafe.sunnyPercent)%   Score \(Int(cafe.sunnyScore))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
 
                 Spacer()
 
                 Image(systemName: "chevron.right")
-                    .font(.caption.bold())
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
-                    .padding(.top, 5)
             }
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.white.opacity(0.6))
-            )
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(cafe.name). Sunny \(cafe.sunnyPercent) percent. Score \(Int(cafe.sunnyScore)).")
+        .accessibilityHint("Centers map and opens details")
     }
 
-    private var bucketTitle: String {
-        switch cafe.resolvedBucket {
-        case "sunny": return "Sunny"
-        case "partial": return "Partial"
-        default: return "Shaded"
-        }
-    }
-
-    private var bucketColor: Color {
-        switch cafe.resolvedBucket {
-        case "sunny": return ThemeColor.sun
-        case "partial": return ThemeColor.coffee
-        default: return ThemeColor.shade
+    private var markerColor: Color {
+        switch cafe.bucket {
+        case .sunny: return ThemeColor.sunnyGreen
+        case .partial: return ThemeColor.partialAmber
+        case .shaded: return ThemeColor.shadedRed
         }
     }
 }
