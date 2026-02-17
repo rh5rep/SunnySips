@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+venv/
+
+# macOS
+.DS_Store
+
+# Local secrets
+.env
+
+# Generated/large data artifacts
+data/buildings.geojson
+data/buildings_datafordeler.geojson
+data/buildings_osm.geojson
+output/*.html
