@@ -3,7 +3,8 @@ name: Build And Deploy Snapshots
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"
+    # Offset from :00/:15/:30/:45 to reduce schedule latency at peak minutes.
+    - cron: "7,22,37,52 * * * *"
 
 permissions:
   contents: read

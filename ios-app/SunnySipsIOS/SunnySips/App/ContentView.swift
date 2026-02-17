@@ -81,7 +81,7 @@ struct ContentView: View {
 
     private var controlsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Filters")
+            Text("Where & When")
                 .font(.headline)
 
             Picker("Area", selection: $viewModel.selectedArea) {
@@ -94,14 +94,32 @@ struct ContentView: View {
                 viewModel.didSelectArea(newValue)
             }
 
-            if !viewModel.availableTimeSnapshots.isEmpty {
-                Picker("Time", selection: $viewModel.selectedTimeUTC) {
+            HStack {
+                Menu {
                     ForEach(viewModel.availableTimeSnapshots) { snapshot in
-                        Text(snapshot.localTimeLabel).tag(Optional(snapshot.timeUTC))
+                        Button(snapshot.localTimeLabel) {
+                            viewModel.selectedTimeUTC = snapshot.timeUTC
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Image(systemName: "clock")
+                        Text(viewModel.activeTimeSnapshot?.localTimeLabel ?? "Select time")
                     }
                 }
-                .pickerStyle(.segmented)
+                .buttonStyle(.bordered)
+                .disabled(viewModel.availableTimeSnapshots.isEmpty)
+
+                Button("Now") {
+                    viewModel.selectNow()
+                }
+                .buttonStyle(.borderedProminent)
             }
+
+            Divider()
+
+            Text("Filters")
+                .font(.headline)
 
             Picker("Bucket", selection: $viewModel.selectedBucket) {
                 ForEach(BucketFilter.allCases) { item in
@@ -112,6 +130,15 @@ struct ContentView: View {
 
             TextField("Search cafes", text: $viewModel.searchText)
                 .textFieldStyle(.roundedBorder)
+
+            Toggle("Hide fully shaded", isOn: $viewModel.hideShaded)
+
+            Picker("Sort", selection: $viewModel.sortOrder) {
+                ForEach(SortOrder.allCases) { item in
+                    Text(item.title).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
@@ -124,12 +151,19 @@ struct ContentView: View {
                 Slider(value: $viewModel.minScore, in: 0 ... 100, step: 1)
             }
 
-            Picker("View", selection: $displayMode) {
-                ForEach(DisplayMode.allCases) { item in
-                    Text(item.title).tag(item)
+            HStack {
+                Picker("View", selection: $displayMode) {
+                    ForEach(DisplayMode.allCases) { item in
+                        Text(item.title).tag(item)
+                    }
                 }
+                .pickerStyle(.segmented)
+
+                Button("Reset") {
+                    viewModel.resetFilters()
+                }
+                .buttonStyle(.bordered)
             }
-            .pickerStyle(.segmented)
         }
         .padding(14)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -141,9 +175,15 @@ struct ContentView: View {
                 Text(viewModel.displayName(for: viewModel.selectedArea))
                     .font(.headline)
                 Spacer()
-                Text("\(viewModel.filteredCafes.count) cafes")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(viewModel.filteredCafes.count) cafes")
+                        .font(.subheadline)
+                    if let updated = viewModel.lastUpdatedText {
+                        Text(updated)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             if let snapshot = viewModel.activeTimeSnapshot {
