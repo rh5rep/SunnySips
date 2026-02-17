@@ -4,13 +4,13 @@ import UIKit
 private enum ActiveSheet: Identifiable {
     case list
     case filters
-    case detail(String)
+    case detail(SunnyCafe)
 
     var id: String {
         switch self {
         case .list: return "list"
         case .filters: return "filters"
-        case .detail(let id): return "detail-\(id)"
+        case .detail(let cafe): return "detail-\(cafe.id)"
         }
     }
 }
@@ -108,7 +108,7 @@ struct ContentView: View {
             }
             .onChange(of: viewModel.selectedCafe) { _, cafe in
                 guard let cafe else { return }
-                activeSheet = .detail(cafe.id)
+                activeSheet = .detail(cafe)
             }
             .overlay {
                 if viewModel.isInitialLoading {
@@ -127,7 +127,7 @@ struct ContentView: View {
                         totalVisibleCount: viewModel.visibleCafes.count,
                         onTapCafe: { cafe in
                             viewModel.selectCafeFromList(cafe)
-                            activeSheet = .detail(cafe.id)
+                            activeSheet = .detail(cafe)
                         }
                     )
                     .presentationDetents([.fraction(0.25), .medium, .large], selection: $listDetent)
@@ -138,14 +138,10 @@ struct ContentView: View {
                     FiltersSheetView(viewModel: viewModel)
                         .presentationDetents([.medium, .large])
                         .presentationDragIndicator(.visible)
-                case .detail:
-                    if let cafe = viewModel.selectedCafe {
-                        CafeDetailView(cafe: cafe)
-                            .presentationDetents([.medium, .large])
-                            .presentationDragIndicator(.visible)
-                    } else {
-                        EmptyView()
-                    }
+                case .detail(let cafe):
+                    CafeDetailView(cafe: cafe)
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
                 }
             }
             .fullScreenCover(isPresented: $viewModel.isFullMapPresented) {

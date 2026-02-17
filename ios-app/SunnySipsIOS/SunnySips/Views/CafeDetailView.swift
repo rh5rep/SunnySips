@@ -4,11 +4,15 @@ import UIKit
 
 struct CafeDetailView: View {
     let cafe: SunnyCafe
+    @State private var lookAroundScene: MKLookAroundScene?
+    @State private var lookAroundLoading = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    lookAroundHeader
+
                     Text(cafe.name)
                         .font(.title2.weight(.bold))
                         .foregroundStyle(.primary)
@@ -59,6 +63,9 @@ struct CafeDetailView: View {
             }
             .navigationTitle("Cafe Details")
             .navigationBarTitleDisplayMode(.inline)
+            .task(id: cafe.id) {
+                await loadLookAround()
+            }
         }
     }
 
@@ -88,6 +95,44 @@ struct CafeDetailView: View {
             .background(color.opacity(0.18), in: Capsule())
     }
 
+    @ViewBuilder
+    private var lookAroundHeader: some View {
+        if let lookAroundScene {
+            LookAroundPreview(initialScene: lookAroundScene)
+                .frame(height: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(alignment: .topLeading) {
+                    Text("Live area preview")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(10)
+                }
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [markerColor.opacity(0.45), Color(.tertiarySystemBackground)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                VStack(spacing: 8) {
+                    Image(systemName: "cup.and.saucer.fill")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(markerColor)
+                    Text(lookAroundLoading ? "Loading nearby preview..." : "No Look Around preview here")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(20)
+            }
+            .frame(height: 180)
+        }
+    }
+
     private func openAppleMaps() {
         let placemark = MKPlacemark(coordinate: cafe.coordinate)
         let item = MKMapItem(placemark: placemark)
@@ -112,6 +157,17 @@ struct CafeDetailView: View {
             if !success {
                 UIApplication.shared.open(webURL)
             }
+        }
+    }
+
+    private func loadLookAround() async {
+        lookAroundLoading = true
+        defer { lookAroundLoading = false }
+        do {
+            let request = MKLookAroundSceneRequest(coordinate: cafe.coordinate)
+            lookAroundScene = try await request.scene
+        } catch {
+            lookAroundScene = nil
         }
     }
 }
