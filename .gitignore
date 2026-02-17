@@ -16,3 +16,4 @@ data/buildings.geojson
 data/buildings_datafordeler.geojson
 data/buildings_osm.geojson
 output/*.html
+site/

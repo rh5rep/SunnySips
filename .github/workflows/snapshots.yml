@@ -1,0 +1,57 @@
+name: Build And Deploy Snapshots
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate required data files
+        run: |
+          test -f data/buildings.geojson || (echo "Missing data/buildings.geojson in repo. Commit it (or change workflow data source)." && exit 1)
+          test -f data/cafes_copenhagen.geojson || (echo "Missing data/cafes_copenhagen.geojson in repo." && exit 1)
+
+      - name: Generate snapshots
+        run: |
+          python scripts/generate_snapshots.py --output-dir site/latest --hours-ahead 0
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
