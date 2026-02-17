@@ -57,6 +57,7 @@ final class SunnySipsViewModel: ObservableObject {
 
     private let service = SnapshotService()
     private var hasLoaded = false
+    private var autoRefreshTask: Task<Void, Never>?
 
     var availableAreas: [SnapshotAreaRef] {
         (snapshotIndex?.areas ?? []).sorted { $0.area < $1.area }
@@ -132,6 +133,7 @@ final class SunnySipsViewModel: ObservableObject {
     }
 
     func refresh() async {
+        if isLoading { return }
         isLoading = true
         errorMessage = nil
         do {
@@ -155,12 +157,18 @@ final class SunnySipsViewModel: ObservableObject {
             selectedTimeUTC = nil
             return
         }
+        let previousSelection = selectedTimeUTC
         let snapshot = try await service.fetchAreaSnapshot(
             fileName: areaRef.file,
             baseURL: AppConfig.snapshotBaseURL
         )
         areaSnapshot = snapshot
-        selectedTimeUTC = snapshot.snapshots.first?.timeUTC
+        if let previousSelection,
+           snapshot.snapshots.contains(where: { $0.timeUTC == previousSelection }) {
+            selectedTimeUTC = previousSelection
+        } else {
+            selectedTimeUTC = snapshot.snapshots.first?.timeUTC
+        }
         selectedCafe = nil
     }
 
@@ -184,6 +192,23 @@ final class SunnySipsViewModel: ObservableObject {
         searchText = ""
         hideShaded = false
         sortOrder = .score
+    }
+
+    func startAutoRefresh(every seconds: TimeInterval = 180) {
+        guard autoRefreshTask == nil else { return }
+        autoRefreshTask = Task {
+            while !Task.isCancelled {
+                let nanos = UInt64(max(seconds, 30) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanos)
+                if Task.isCancelled { break }
+                await refresh()
+            }
+        }
+    }
+
+    func stopAutoRefresh() {
+        autoRefreshTask?.cancel()
+        autoRefreshTask = nil
     }
 
     private static func parseISO(_ value: String) -> Date? {

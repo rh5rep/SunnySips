@@ -38,6 +38,14 @@ struct CafeDetailView: View {
                 .buttonStyle(.borderedProminent)
 
                 Button {
+                    openGoogleMaps()
+                } label: {
+                    Label("Open in Google Maps", systemImage: "mappin.and.ellipse")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+
+                Button {
                     openStreetView()
                 } label: {
                     Label("Open Street View", systemImage: "figure.walk.motion")
@@ -61,6 +69,14 @@ struct CafeDetailView: View {
 
     private func openStreetView() {
         let urlString = "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=\(cafe.lat),\(cafe.lon)"
+        if let url = URL(string: urlString) {
+            openURL(url)
+        }
+    }
+
+    private func openGoogleMaps() {
+        let query = "\(cafe.lat),\(cafe.lon)"
+        let urlString = "https://www.google.com/maps/search/?api=1&query=\(query)"
         if let url = URL(string: urlString) {
             openURL(url)
         }
