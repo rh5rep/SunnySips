@@ -3,8 +3,8 @@ name: Build And Deploy Snapshots
 on:
   workflow_dispatch:
   schedule:
-    # Offset from :00/:15/:30/:45 to reduce schedule latency at peak minutes.
-    - cron: "7,22,37,52 * * * *"
+    # Run every 5 minutes (best effort; GitHub schedule can still have slight delays).
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: read
@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: "pages"
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -39,7 +39,7 @@ jobs:
 
       - name: Generate snapshots
         run: |
-          python scripts/generate_snapshots.py --output-dir site/latest --hours-ahead 0
+          python scripts/generate_snapshots.py --output-dir site/latest --hours-ahead 12
 
       - name: Upload pages artifact
         uses: actions/upload-pages-artifact@v3

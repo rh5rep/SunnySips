@@ -1,22 +1,16 @@
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var viewModel = SunnySipsViewModel()
-    @State private var displayMode: DisplayMode = .split
+    @State private var selectedTab: AppTab = .map
+    @State private var locateRequestID = 0
+    @State private var showFilters = false
+    @State private var showFullMap = false
 
-    enum DisplayMode: String, CaseIterable, Identifiable {
-        case split
+    enum AppTab: String, Hashable {
         case map
         case list
-
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .split: return "Split"
-            case .map: return "Map"
-            case .list: return "List"
-            }
-        }
     }
 
     var body: some View {
@@ -26,31 +20,60 @@ struct ContentView: View {
                     ProgressView("Loading snapshots...")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 14) {
-                            controlsCard
-                            summaryCard
-                            contentSection
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
+                    VStack(spacing: 10) {
+                        summaryCard
+                            .padding(.horizontal, 16)
+                            .padding(.top, 10)
+                        tabSection
+                            .padding(.horizontal, 8)
+                            .padding(.bottom, 4)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
             }
             .background(ThemeColor.cream.opacity(0.25))
             .navigationTitle("SunnySips")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        Task { await viewModel.refresh() }
+                        showFilters = true
                     } label: {
-                        Image(systemName: "arrow.clockwise")
+                        Label("Filters", systemImage: "slider.horizontal.3")
                     }
-                    .accessibilityLabel("Refresh snapshots")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    HStack(spacing: 12) {
+                        Button {
+                            selectedTab = .map
+                            locateRequestID += 1
+                        } label: {
+                            Image(systemName: "location.fill")
+                        }
+                        .accessibilityLabel("Locate me")
+
+                        Button {
+                            Task { await viewModel.refresh() }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .accessibilityLabel("Refresh snapshots")
+                    }
                 }
             }
             .task {
                 await viewModel.loadIfNeeded()
+                viewModel.startAutoRefresh()
+            }
+            .onDisappear {
+                viewModel.stopAutoRefresh()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                switch newPhase {
+                case .active:
+                    viewModel.startAutoRefresh()
+                default:
+                    viewModel.stopAutoRefresh()
+                }
             }
             .refreshable {
                 await viewModel.refresh()
@@ -76,97 +99,36 @@ struct ContentView: View {
                 CafeDetailView(cafe: cafe)
                     .presentationDetents([.medium, .large])
             }
-        }
-    }
-
-    private var controlsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Where & When")
-                .font(.headline)
-
-            Picker("Area", selection: $viewModel.selectedArea) {
-                ForEach(viewModel.availableAreas) { area in
-                    Text(viewModel.displayName(for: area.area)).tag(area.area)
-                }
+            .sheet(isPresented: $showFilters) {
+                filterSheet
             }
-            .pickerStyle(.menu)
-            .onChange(of: viewModel.selectedArea) { _, newValue in
-                viewModel.didSelectArea(newValue)
-            }
-
-            HStack {
-                Menu {
-                    ForEach(viewModel.availableTimeSnapshots) { snapshot in
-                        Button(snapshot.localTimeLabel) {
-                            viewModel.selectedTimeUTC = snapshot.timeUTC
+            .fullScreenCover(isPresented: $showFullMap) {
+                NavigationStack {
+                    CafeMapView(
+                        cafes: viewModel.filteredCafes,
+                        selectedCafe: $viewModel.selectedCafe,
+                        locateRequestID: locateRequestID
+                    )
+                    .ignoresSafeArea(edges: .bottom)
+                    .navigationTitle("Full Map")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Close") {
+                                showFullMap = false
+                            }
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                locateRequestID += 1
+                            } label: {
+                                Image(systemName: "location.fill")
+                            }
                         }
                     }
-                } label: {
-                    HStack {
-                        Image(systemName: "clock")
-                        Text(viewModel.activeTimeSnapshot?.localTimeLabel ?? "Select time")
-                    }
                 }
-                .buttonStyle(.bordered)
-                .disabled(viewModel.availableTimeSnapshots.isEmpty)
-
-                Button("Now") {
-                    viewModel.selectNow()
-                }
-                .buttonStyle(.borderedProminent)
-            }
-
-            Divider()
-
-            Text("Filters")
-                .font(.headline)
-
-            Picker("Bucket", selection: $viewModel.selectedBucket) {
-                ForEach(BucketFilter.allCases) { item in
-                    Text(item.title).tag(item)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            TextField("Search cafes", text: $viewModel.searchText)
-                .textFieldStyle(.roundedBorder)
-
-            Toggle("Hide fully shaded", isOn: $viewModel.hideShaded)
-
-            Picker("Sort", selection: $viewModel.sortOrder) {
-                ForEach(SortOrder.allCases) { item in
-                    Text(item.title).tag(item)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Min score")
-                    Spacer()
-                    Text("\(Int(viewModel.minScore))")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                Slider(value: $viewModel.minScore, in: 0 ... 100, step: 1)
-            }
-
-            HStack {
-                Picker("View", selection: $displayMode) {
-                    ForEach(DisplayMode.allCases) { item in
-                        Text(item.title).tag(item)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Button("Reset") {
-                    viewModel.resetFilters()
-                }
-                .buttonStyle(.bordered)
             }
         }
-        .padding(14)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
     private var summaryCard: some View {
@@ -185,6 +147,14 @@ struct ContentView: View {
                     }
                 }
             }
+
+            HStack {
+                Text("Time: \(viewModel.activeTimeSnapshot?.localTimeLabel ?? "Unknown")")
+                Spacer()
+                Text("\(viewModel.availableTimeSnapshots.count) forecast slots")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
 
             if let snapshot = viewModel.activeTimeSnapshot {
                 HStack(spacing: 14) {
@@ -210,52 +180,130 @@ struct ContentView: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    @ViewBuilder
-    private var contentSection: some View {
-        switch displayMode {
-        case .map:
+    private var tabSection: some View {
+        TabView(selection: $selectedTab) {
             mapCard
-        case .list:
+                .tabItem { Label("Map", systemImage: "map.fill") }
+                .tag(AppTab.map)
+
             listCard
-        case .split:
-            VStack(spacing: 14) {
-                mapCard
-                listCard
-            }
+                .tabItem { Label("List", systemImage: "list.bullet") }
+                .tag(AppTab.list)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var mapCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Map")
-                .font(.headline)
-            CafeMapView(cafes: viewModel.filteredCafes, selectedCafe: $viewModel.selectedCafe)
-                .frame(height: 340)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+        ZStack(alignment: .topTrailing) {
+            CafeMapView(
+                cafes: viewModel.filteredCafes,
+                selectedCafe: $viewModel.selectedCafe,
+                locateRequestID: locateRequestID
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+
+            Button {
+                showFullMap = true
+            } label: {
+                Label("Full Map", systemImage: "arrow.up.left.and.arrow.down.right")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
+            .padding(10)
         }
-        .padding(14)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal, 8)
     }
 
     private var listCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Cafes")
+            Text("List View")
                 .font(.headline)
             if viewModel.filteredCafes.isEmpty {
                 Text("No cafes match this filter.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                LazyVStack(spacing: 8) {
-                    ForEach(viewModel.filteredCafes) { cafe in
-                        CafeRowView(cafe: cafe) {
-                            viewModel.selectedCafe = cafe
+                List(viewModel.filteredCafes) { cafe in
+                    CafeRowView(cafe: cafe) {
+                        viewModel.selectedCafe = cafe
+                    }
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                    .listRowSeparator(.hidden)
+                }
+                .listStyle(.plain)
+            }
+        }
+        .padding(10)
+    }
+
+    private var filterSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Where & When") {
+                    Picker("Area", selection: $viewModel.selectedArea) {
+                        ForEach(viewModel.availableAreas) { area in
+                            Text(viewModel.displayName(for: area.area)).tag(area.area)
                         }
+                    }
+                    .onChange(of: viewModel.selectedArea) { _, newValue in
+                        viewModel.didSelectArea(newValue)
+                    }
+
+                    Picker("Time", selection: $viewModel.selectedTimeUTC) {
+                        ForEach(viewModel.availableTimeSnapshots) { snapshot in
+                            Text(snapshot.localTimeLabel).tag(Optional(snapshot.timeUTC))
+                        }
+                    }
+                    .disabled(viewModel.availableTimeSnapshots.isEmpty)
+
+                    Button("Use Now") {
+                        viewModel.selectNow()
+                    }
+                }
+
+                Section("Filters") {
+                    Picker("Bucket", selection: $viewModel.selectedBucket) {
+                        ForEach(BucketFilter.allCases) { item in
+                            Text(item.title).tag(item)
+                        }
+                    }
+                    TextField("Search cafes", text: $viewModel.searchText)
+                    Toggle("Hide fully shaded", isOn: $viewModel.hideShaded)
+                    Picker("Sort", selection: $viewModel.sortOrder) {
+                        ForEach(SortOrder.allCases) { item in
+                            Text(item.title).tag(item)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Min score")
+                            Spacer()
+                            Text("\(Int(viewModel.minScore))")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $viewModel.minScore, in: 0 ... 100, step: 1)
+                    }
+                }
+
+                Section {
+                    Button("Reset Filters") {
+                        viewModel.resetFilters()
+                    }
+                }
+            }
+            .navigationTitle("Filters")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        showFilters = false
                     }
                 }
             }
         }
-        .padding(14)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 }
