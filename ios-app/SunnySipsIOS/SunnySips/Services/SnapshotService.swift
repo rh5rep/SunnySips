@@ -38,9 +38,19 @@ actor SnapshotService {
         baseURL: URL,
         as _: T.Type
     ) async throws -> T {
-        let url = baseURL.appendingPathComponent(pathComponent)
+        let base = baseURL.appendingPathComponent(pathComponent)
+        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        let cacheBust = String(Int(Date().timeIntervalSince1970 / 60.0))
+        var items = components?.queryItems ?? []
+        items.append(URLQueryItem(name: "v", value: cacheBust))
+        components?.queryItems = items
+        let url = components?.url ?? base
+
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 15
         do {
-            let (data, response) = try await session.data(from: url)
+            let (data, response) = try await session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, (200 ... 299).contains(httpResponse.statusCode) else {
                 throw SnapshotServiceError.invalidResponse
             }
@@ -79,4 +89,3 @@ actor SnapshotService {
         return caches.appendingPathComponent("SunnySipsSnapshots").appendingPathComponent(pathComponent)
     }
 }
-

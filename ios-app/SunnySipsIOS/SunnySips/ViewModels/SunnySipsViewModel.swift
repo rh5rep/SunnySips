@@ -25,6 +25,20 @@ enum BucketFilter: String, CaseIterable, Identifiable {
     }
 }
 
+enum SortOrder: String, CaseIterable, Identifiable {
+    case score
+    case name
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .score: return "Best Score"
+        case .name: return "Name"
+        }
+    }
+}
+
 @MainActor
 final class SunnySipsViewModel: ObservableObject {
     @Published var isLoading = false
@@ -37,6 +51,8 @@ final class SunnySipsViewModel: ObservableObject {
     @Published var selectedBucket: BucketFilter = .all
     @Published var minScore: Double = 0
     @Published var searchText = ""
+    @Published var hideShaded = false
+    @Published var sortOrder: SortOrder = .score
     @Published var selectedCafe: CafeSnapshot?
 
     private let service = SnapshotService()
@@ -62,20 +78,37 @@ final class SunnySipsViewModel: ObservableObject {
 
     var filteredCafes: [CafeSnapshot] {
         guard let cafes = activeTimeSnapshot?.cafes else { return [] }
-        return cafes
+        let filtered = cafes
             .filter { selectedBucket.matches($0) }
+            .filter { !hideShaded || $0.resolvedBucket != "shaded" }
             .filter { $0.sunnyScore >= minScore }
             .filter { cafe in
                 let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
                 if query.isEmpty { return true }
                 return cafe.name.localizedCaseInsensitiveContains(query)
             }
-            .sorted { lhs, rhs in
+        switch sortOrder {
+        case .score:
+            return filtered.sorted { lhs, rhs in
                 if lhs.sunnyScore != rhs.sunnyScore {
                     return lhs.sunnyScore > rhs.sunnyScore
                 }
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
+        case .name:
+            return filtered.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        }
+    }
+
+    var lastUpdatedText: String? {
+        guard let raw = areaSnapshot?.generatedAtUTC else { return nil }
+        guard let date = Self.parseISO(raw) else { return nil }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        let relative = formatter.localizedString(for: date, relativeTo: Date())
+        return "Updated \(relative)"
     }
 
     func displayName(for area: String) -> String {
@@ -139,5 +172,24 @@ final class SunnySipsViewModel: ObservableObject {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    func selectNow() {
+        selectedTimeUTC = availableTimeSnapshots.first?.timeUTC
+    }
+
+    func resetFilters() {
+        selectedBucket = .all
+        minScore = 0
+        searchText = ""
+        hideShaded = false
+        sortOrder = .score
+    }
+
+    private static func parseISO(_ value: String) -> Date? {
+        if let d = ISO8601DateFormatter.withFractionalSeconds.date(from: value) {
+            return d
+        }
+        return ISO8601DateFormatter.internetDateTime.date(from: value)
     }
 }
