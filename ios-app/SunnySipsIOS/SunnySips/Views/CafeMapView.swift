@@ -17,8 +17,10 @@ struct CafeMapView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView(frame: .zero)
+        mapView.preferredConfiguration = MKStandardMapConfiguration(elevationStyle: .flat)
         context.coordinator.mapView = mapView
         mapView.delegate = context.coordinator
+        mapView.register(UserLocationAnnotationView.self, forAnnotationViewWithReuseIdentifier: UserLocationAnnotationView.reuseIdentifier)
         mapView.register(CafeAnnotationView.self, forAnnotationViewWithReuseIdentifier: CafeAnnotationView.reuseIdentifier)
         mapView.register(CafeClusterAnnotationView.self, forAnnotationViewWithReuseIdentifier: CafeClusterAnnotationView.reuseIdentifier)
         mapView.showsUserLocation = true
@@ -150,7 +152,11 @@ struct CafeMapView: UIViewRepresentable {
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
             if annotation is MKUserLocation {
-                return nil
+                let view = mapView.dequeueReusableAnnotationView(
+                    withIdentifier: UserLocationAnnotationView.reuseIdentifier,
+                    for: annotation
+                ) as! UserLocationAnnotationView
+                return view
             }
 
             if let cluster = annotation as? MKClusterAnnotation {
@@ -211,6 +217,28 @@ struct CafeMapView: UIViewRepresentable {
                 return
             }
         }
+    }
+}
+
+final class UserLocationAnnotationView: MKMarkerAnnotationView {
+    static let reuseIdentifier = "UserLocationAnnotationView"
+
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        markerTintColor = .systemBlue
+        glyphImage = UIImage(systemName: "person.fill")
+        glyphTintColor = .white
+        titleVisibility = .hidden
+        subtitleVisibility = .hidden
+        displayPriority = .required
+        canShowCallout = false
+        clusteringIdentifier = nil
+        isAccessibilityElement = true
+        accessibilityLabel = "Your location"
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 }
 

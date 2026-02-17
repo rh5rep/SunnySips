@@ -77,10 +77,17 @@ enum SunnyBucket: String, CaseIterable, Identifiable {
         case .shaded: return "Shaded"
         }
     }
+
+    var filterValue: SunnyBucketFilter {
+        switch self {
+        case .sunny: return .sunny
+        case .partial: return .partial
+        case .shaded: return .shaded
+        }
+    }
 }
 
-enum SunnyBucketFilter: String, CaseIterable, Identifiable {
-    case all
+enum SunnyBucketFilter: String, CaseIterable, Identifiable, Hashable {
     case sunny
     case partial
     case shaded
@@ -89,23 +96,9 @@ enum SunnyBucketFilter: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .all: return "All"
         case .sunny: return "Sunny"
         case .partial: return "Partial"
         case .shaded: return "Shaded"
-        }
-    }
-
-    func matches(_ cafe: SunnyCafe) -> Bool {
-        switch self {
-        case .all:
-            return true
-        case .sunny:
-            return cafe.bucket == .sunny
-        case .partial:
-            return cafe.bucket == .partial
-        case .shaded:
-            return cafe.bucket == .shaded
         }
     }
 }
@@ -200,7 +193,7 @@ struct SunnyFilters {
     var area: SunnyArea = .coreCopenhagen
     var useNow: Bool = true
     var selectedTime: Date = Date().roundedToQuarterHour()
-    var bucket: SunnyBucketFilter = .sunny
+    var selectedBuckets: Set<SunnyBucketFilter> = [.sunny]
     var minScore: Double = 0
     var searchText: String = ""
     var sort: SunnySortOption = .bestScore

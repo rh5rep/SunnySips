@@ -33,9 +33,27 @@ struct FiltersSheetView: View {
                 }
 
                 Section("Ranking") {
-                    Picker("Bucket", selection: bucketBinding) {
-                        ForEach(SunnyBucketFilter.allCases) { bucket in
-                            Text(bucket.title).tag(bucket)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Buckets")
+                            .font(.subheadline.weight(.semibold))
+
+                        HStack(spacing: 8) {
+                            ForEach(SunnyBucketFilter.allCases) { bucket in
+                                let selected = viewModel.filters.selectedBuckets.contains(bucket)
+                                Button {
+                                    viewModel.toggleBucket(bucket)
+                                } label: {
+                                    Text(bucket.title)
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(
+                                            Capsule().fill(selected ? color(for: bucket).opacity(0.88) : Color(.systemBackground).opacity(0.55))
+                                        )
+                                        .foregroundStyle(selected ? Color.black : Color.primary)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
 
@@ -104,13 +122,6 @@ struct FiltersSheetView: View {
         )
     }
 
-    private var bucketBinding: Binding<SunnyBucketFilter> {
-        Binding(
-            get: { viewModel.filters.bucket },
-            set: { viewModel.bucketChanged($0) }
-        )
-    }
-
     private var minScoreBinding: Binding<Double> {
         Binding(
             get: { viewModel.filters.minScore },
@@ -130,5 +141,13 @@ struct FiltersSheetView: View {
             get: { viewModel.filters.sort },
             set: { viewModel.sortChanged($0) }
         )
+    }
+
+    private func color(for bucket: SunnyBucketFilter) -> Color {
+        switch bucket {
+        case .sunny: return ThemeColor.sunnyGreen
+        case .partial: return ThemeColor.partialAmber
+        case .shaded: return ThemeColor.shadedRed
+        }
     }
 }

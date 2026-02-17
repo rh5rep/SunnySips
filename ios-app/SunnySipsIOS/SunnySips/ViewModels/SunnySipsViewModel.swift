@@ -20,8 +20,6 @@ final class SunnySipsViewModel: ObservableObject {
 
     @Published var isInitialLoading = true
     @Published var isRefreshing = false
-    @Published var isFilterSheetPresented = false
-    @Published var isListSheetPresented = true
     @Published var isFullMapPresented = false
     @Published var showLocationSettingsPrompt = false
     @Published var errorMessage: String?
@@ -85,7 +83,7 @@ final class SunnySipsViewModel: ObservableObject {
     }
 
     func resetFilters() {
-        filters.bucket = .sunny
+        filters.selectedBuckets = [.sunny]
         filters.minScore = 0
         filters.searchText = ""
         filters.sort = .bestScore
@@ -120,8 +118,12 @@ final class SunnySipsViewModel: ObservableObject {
         Task { await reloadFromAPI() }
     }
 
-    func bucketChanged(_ bucket: SunnyBucketFilter) {
-        filters.bucket = bucket
+    func toggleBucket(_ bucket: SunnyBucketFilter) {
+        if filters.selectedBuckets.contains(bucket) {
+            filters.selectedBuckets.remove(bucket)
+        } else {
+            filters.selectedBuckets.insert(bucket)
+        }
         applyLocalFilters()
     }
 
@@ -210,8 +212,9 @@ final class SunnySipsViewModel: ObservableObject {
 
     private func applyLocalFilters() {
         let search = filters.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedBuckets = filters.selectedBuckets
         var filtered = allCafes
-            .filter { filters.bucket.matches($0) }
+            .filter { selectedBuckets.isEmpty || selectedBuckets.contains($0.bucket.filterValue) }
             .filter { $0.sunnyScore >= filters.minScore }
 
         if !search.isEmpty {

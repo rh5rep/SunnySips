@@ -1,12 +1,27 @@
 import SwiftUI
 import UIKit
 
+private enum ActiveSheet: Identifiable {
+    case list
+    case filters
+    case detail(String)
+
+    var id: String {
+        switch self {
+        case .list: return "list"
+        case .filters: return "filters"
+        case .detail(let id): return "detail-\(id)"
+        }
+    }
+}
+
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
 
     @StateObject private var viewModel = SunnySipsViewModel()
     @State private var listDetent: PresentationDetent = .fraction(0.25)
+    @State private var activeSheet: ActiveSheet? = .list
 
     var body: some View {
         NavigationStack {
@@ -51,7 +66,7 @@ struct ContentView: View {
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        viewModel.isFilterSheetPresented = true
+                        presentFilters()
                     } label: {
                         Image(systemName: "slider.horizontal.3")
                     }
@@ -59,7 +74,7 @@ struct ContentView: View {
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
-                        viewModel.isListSheetPresented = true
+                        presentList()
                     } label: {
                         Image(systemName: "list.bullet")
                     }
@@ -69,7 +84,6 @@ struct ContentView: View {
                         viewModel.requestLocateUser()
                     } label: {
                         Image(systemName: "location.fill")
-                            .foregroundStyle(.blue)
                     }
                     .accessibilityLabel("Center on my location")
 
@@ -92,6 +106,10 @@ struct ContentView: View {
                     viewModel.stopAutoRefresh()
                 }
             }
+            .onChange(of: viewModel.selectedCafe) { _, cafe in
+                guard let cafe else { return }
+                activeSheet = .detail(cafe.id)
+            }
             .overlay {
                 if viewModel.isInitialLoading {
                     loadingView
@@ -99,28 +117,36 @@ struct ContentView: View {
                     blockingErrorView(message: blockingError)
                 }
             }
-            .sheet(item: $viewModel.selectedCafe) { cafe in
-                CafeDetailView(cafe: cafe)
-                    .presentationDetents([.medium, .large])
+            .sheet(item: $activeSheet, onDismiss: {
+                viewModel.selectedCafe = nil
+            }) { sheet in
+                switch sheet {
+                case .list:
+                    ListSheetView(
+                        cafes: viewModel.visibleCafes,
+                        totalVisibleCount: viewModel.visibleCafes.count,
+                        onTapCafe: { cafe in
+                            viewModel.selectCafeFromList(cafe)
+                            activeSheet = .detail(cafe.id)
+                        }
+                    )
+                    .presentationDetents([.fraction(0.25), .medium, .large], selection: $listDetent)
+                    .presentationBackgroundInteraction(.enabled)
                     .presentationDragIndicator(.visible)
-            }
-            .sheet(isPresented: $viewModel.isListSheetPresented) {
-                ListSheetView(
-                    cafes: viewModel.visibleCafes,
-                    totalVisibleCount: viewModel.visibleCafes.count,
-                    onTapCafe: { cafe in
-                        viewModel.selectCafeFromList(cafe)
+                    .animation(.spring(response: 0.35, dampingFraction: 0.9), value: listDetent)
+                case .filters:
+                    FiltersSheetView(viewModel: viewModel)
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
+                case .detail:
+                    if let cafe = viewModel.selectedCafe {
+                        CafeDetailView(cafe: cafe)
+                            .presentationDetents([.medium, .large])
+                            .presentationDragIndicator(.visible)
+                    } else {
+                        EmptyView()
                     }
-                )
-                .presentationDetents([.fraction(0.25), .medium, .large], selection: $listDetent)
-                .presentationBackgroundInteraction(.enabled)
-                .presentationDragIndicator(.visible)
-                .animation(.spring(response: 0.35, dampingFraction: 0.9), value: listDetent)
-            }
-            .sheet(isPresented: $viewModel.isFilterSheetPresented) {
-                FiltersSheetView(viewModel: viewModel)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
+                }
             }
             .fullScreenCover(isPresented: $viewModel.isFullMapPresented) {
                 fullMapView
@@ -167,7 +193,7 @@ struct ContentView: View {
 
                     Button {
                         withAnimation(.spring(duration: 0.3)) {
-                            viewModel.isFullMapPresented = true
+                            presentFullMap()
                         }
                     } label: {
                         Label("Full Map", systemImage: "arrow.up.left.and.arrow.down.right")
@@ -211,11 +237,11 @@ struct ContentView: View {
     }
 
     private func bucketChip(bucket: SunnyBucketFilter, label: String, icon: String, color: Color) -> some View {
-        let isSelected = viewModel.filters.bucket == bucket
+        let isSelected = viewModel.filters.selectedBuckets.contains(bucket)
 
         return Button {
             withAnimation(.spring(duration: 0.25)) {
-                viewModel.bucketChanged(bucket)
+                viewModel.toggleBucket(bucket)
             }
         } label: {
             HStack(spacing: 6) {
@@ -300,15 +326,35 @@ struct ContentView: View {
                         viewModel.requestLocateUser()
                     } label: {
                         Image(systemName: "location.fill")
-                            .foregroundStyle(.blue)
                     }
                     Button {
-                        viewModel.isListSheetPresented = true
+                        viewModel.isFullMapPresented = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            presentList()
+                        }
                     } label: {
                         Image(systemName: "list.bullet")
                     }
                 }
             }
+        }
+    }
+
+    private func presentFilters() {
+        viewModel.selectedCafe = nil
+        activeSheet = .filters
+    }
+
+    private func presentList() {
+        viewModel.selectedCafe = nil
+        activeSheet = .list
+    }
+
+    private func presentFullMap() {
+        viewModel.selectedCafe = nil
+        activeSheet = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            viewModel.isFullMapPresented = true
         }
     }
 }
