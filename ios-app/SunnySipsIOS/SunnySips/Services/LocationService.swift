@@ -6,6 +6,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     @Published private(set) var location: CLLocation?
 
     private let manager: CLLocationManager
+    private var lastLocationRequestAt: Date?
 
     override init() {
         self.manager = CLLocationManager()
@@ -16,35 +17,44 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     func requestPermissionAndLocate() {
-        if authorizationStatus == .notDetermined {
+        authorizationStatus = manager.authorizationStatus
+        switch authorizationStatus {
+        case .notDetermined:
             manager.requestWhenInUseAuthorization()
+        case .authorizedWhenInUse, .authorizedAlways:
+            requestLocationIfAllowed()
+        case .denied, .restricted:
+            break
+        @unknown default:
+            break
         }
-        if isAuthorized {
-            manager.requestLocation()
-        }
-    }
-
-    var isAuthorized: Bool {
-        authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         DispatchQueue.main.async {
             self.authorizationStatus = manager.authorizationStatus
-            if self.isAuthorized {
-                manager.requestLocation()
+            if self.authorizationStatus == .authorizedWhenInUse || self.authorizationStatus == .authorizedAlways {
+                self.requestLocationIfAllowed()
             }
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let latest = locations.last else { return }
         DispatchQueue.main.async {
-            self.location = latest
+            self.location = locations.last
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         _ = error
+    }
+
+    private func requestLocationIfAllowed() {
+        let now = Date()
+        if let last = lastLocationRequestAt, now.timeIntervalSince(last) < 1.0 {
+            return
+        }
+        lastLocationRequestAt = now
+        manager.requestLocation()
     }
 }

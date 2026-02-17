@@ -88,6 +88,7 @@ final class SunnySipsViewModel: ObservableObject {
                 if query.isEmpty { return true }
                 return cafe.name.localizedCaseInsensitiveContains(query)
             }
+
         switch sortOrder {
         case .score:
             return filtered.sorted { lhs, rhs in
@@ -108,8 +109,7 @@ final class SunnySipsViewModel: ObservableObject {
         guard let date = Self.parseISO(raw) else { return nil }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
-        let relative = formatter.localizedString(for: date, relativeTo: Date())
-        return "Updated \(relative)"
+        return "Updated \(formatter.localizedString(for: date, relativeTo: Date()))"
     }
 
     func displayName(for area: String) -> String {
@@ -198,8 +198,8 @@ final class SunnySipsViewModel: ObservableObject {
         guard autoRefreshTask == nil else { return }
         autoRefreshTask = Task {
             while !Task.isCancelled {
-                let nanos = UInt64(max(seconds, 30) * 1_000_000_000)
-                try? await Task.sleep(nanoseconds: nanos)
+                let delay = UInt64(max(seconds, 30) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: delay)
                 if Task.isCancelled { break }
                 await refresh()
             }

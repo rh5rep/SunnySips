@@ -38,13 +38,13 @@ actor SnapshotService {
         baseURL: URL,
         as _: T.Type
     ) async throws -> T {
-        let base = baseURL.appendingPathComponent(pathComponent)
-        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        let baseURLWithPath = baseURL.appendingPathComponent(pathComponent)
+        var components = URLComponents(url: baseURLWithPath, resolvingAgainstBaseURL: false)
         let cacheBust = String(Int(Date().timeIntervalSince1970 / 60.0))
         var items = components?.queryItems ?? []
         items.append(URLQueryItem(name: "v", value: cacheBust))
         components?.queryItems = items
-        let url = components?.url ?? base
+        let url = components?.url ?? baseURLWithPath
 
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData

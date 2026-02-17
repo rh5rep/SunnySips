@@ -30,6 +30,11 @@ AREAS = {
 }
 
 
+def _in_bbox(lon: float, lat: float, bbox: tuple[float, float, float, float]) -> bool:
+    min_lon, min_lat, max_lon, max_lat = bbox
+    return min_lon <= lon <= max_lon and min_lat <= lat <= max_lat
+
+
 def _parse_time(value: str | None) -> datetime:
     if not value:
         return datetime.now(timezone.utc)
@@ -172,9 +177,37 @@ def main() -> None:
     area_index = []
     print(f"Generating snapshots for {len(requested_areas)} areas and {len(time_slots)} time slot(s)...")
 
+    area_bboxes: dict[str, tuple[float, float, float, float]] = {}
+    area_cafes: dict[str, list[dict]] = {}
     for area in requested_areas:
-        min_lon, min_lat, max_lon, max_lat = AREAS[area]
-        cafes = api._cafes_in_bbox(api.CAFES, min_lon, min_lat, max_lon, max_lat)
+        bbox = AREAS[area]
+        area_bboxes[area] = bbox
+        area_cafes[area] = api._cafes_in_bbox(api.CAFES, *bbox)
+
+    # Performance path: compute once on core-cph and filter for sub-areas.
+    use_core_fastpath = "core-cph" in requested_areas and bool(area_cafes.get("core-cph"))
+    core_rows_by_time: dict[datetime, tuple[float, list[dict]]] = {}
+    if use_core_fastpath:
+        print("Using core-cph fast path for shadow computations.")
+        core_cafes = area_cafes["core-cph"]
+        for dt in time_slots:
+            try:
+                cloud_cover = float(get_cloud_cover(dt))
+            except Exception:
+                cloud_cover = 50.0
+            core_rows = compute_sunny_cafes(
+                core_cafes,
+                api.BUILDING_INDEX,
+                dt,
+                cloud_cover,
+                limit=None,
+            )
+            core_rows_by_time[dt] = (cloud_cover, core_rows)
+
+    for area in requested_areas:
+        bbox = area_bboxes[area]
+        cafes = area_cafes[area]
+        min_lon, min_lat, max_lon, max_lat = bbox
         if not cafes:
             payload = {
                 "generated_at_utc": generated_at.isoformat(),
@@ -189,17 +222,28 @@ def main() -> None:
 
         snapshots = []
         for dt in time_slots:
-            try:
-                cloud_cover = float(get_cloud_cover(dt))
-            except Exception:
-                cloud_cover = 50.0
-            rows = compute_sunny_cafes(
-                cafes,
-                api.BUILDING_INDEX,
-                dt,
-                cloud_cover,
-                limit=None,
-            )
+            if use_core_fastpath:
+                cloud_cover, base_rows = core_rows_by_time[dt]
+                if area == "core-cph":
+                    rows = base_rows
+                else:
+                    rows = [
+                        row for row in base_rows
+                        if _in_bbox(float(row.get("lon", 0.0)), float(row.get("lat", 0.0)), bbox)
+                    ]
+            else:
+                try:
+                    cloud_cover = float(get_cloud_cover(dt))
+                except Exception:
+                    cloud_cover = 50.0
+                rows = compute_sunny_cafes(
+                    cafes,
+                    api.BUILDING_INDEX,
+                    dt,
+                    cloud_cover,
+                    limit=None,
+                )
+
             snapshots.append(
                 {
                     "time_utc": dt.isoformat(),

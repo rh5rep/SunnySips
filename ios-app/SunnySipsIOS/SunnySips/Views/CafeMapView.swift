@@ -6,10 +6,12 @@ struct CafeMapView: View {
     let cafes: [CafeSnapshot]
     @Binding var selectedCafe: CafeSnapshot?
     let locateRequestID: Int
+    var onPermissionDenied: () -> Void = {}
 
     @State private var position: MapCameraPosition = .automatic
     @StateObject private var locationService = LocationService()
     @State private var pendingCenterOnUser = false
+    @State private var didNotifyPermissionDenied = false
     @Namespace private var mapScope
 
     var body: some View {
@@ -38,14 +40,18 @@ struct CafeMapView: View {
         .onChange(of: locateRequestID) { _, _ in
             pendingCenterOnUser = true
             locationService.requestPermissionAndLocate()
-            if let location = locationService.location {
-                centerOn(location.coordinate)
+            handleAuthorizationChange(locationService.authorizationStatus)
+            if let current = locationService.location {
+                centerOn(current.coordinate)
                 pendingCenterOnUser = false
             }
         }
-        .onReceive(locationService.$location.compactMap { $0 }) { location in
+        .onChange(of: locationService.authorizationStatus) { _, status in
+            handleAuthorizationChange(status)
+        }
+        .onReceive(locationService.$location.compactMap { $0 }) { newLocation in
             guard pendingCenterOnUser else { return }
-            centerOn(location.coordinate)
+            centerOn(newLocation.coordinate)
             pendingCenterOnUser = false
         }
     }
@@ -98,5 +104,22 @@ struct CafeMapView: View {
             span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
         )
         position = .region(region)
+    }
+
+    private func handleAuthorizationChange(_ status: CLAuthorizationStatus) {
+        switch status {
+        case .authorizedAlways, .authorizedWhenInUse:
+            didNotifyPermissionDenied = false
+        case .denied, .restricted:
+            if !didNotifyPermissionDenied {
+                didNotifyPermissionDenied = true
+                pendingCenterOnUser = false
+                onPermissionDenied()
+            }
+        case .notDetermined:
+            break
+        @unknown default:
+            break
+        }
     }
 }

@@ -8,6 +8,10 @@ venv/
 # macOS
 .DS_Store
 
+# Xcode user state
+*.xcuserstate
+xcuserdata/
+
 # Local secrets
 .env
 

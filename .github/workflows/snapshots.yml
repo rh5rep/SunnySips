@@ -3,7 +3,6 @@ name: Build And Deploy Snapshots
 on:
   workflow_dispatch:
   schedule:
-    # Run every 5 minutes (best effort; GitHub schedule can still have slight delays).
     - cron: "*/5 * * * *"
 
 permissions:

@@ -1,12 +1,15 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @StateObject private var viewModel = SunnySipsViewModel()
     @State private var selectedTab: AppTab = .map
-    @State private var locateRequestID = 0
     @State private var showFilters = false
     @State private var showFullMap = false
+    @State private var showLocationSettingsAlert = false
+    @State private var locateRequestID = 0
 
     enum AppTab: String, Hashable {
         case map
@@ -108,7 +111,9 @@ struct ContentView: View {
                         cafes: viewModel.filteredCafes,
                         selectedCafe: $viewModel.selectedCafe,
                         locateRequestID: locateRequestID
-                    )
+                    ) {
+                        showLocationSettingsAlert = true
+                    }
                     .ignoresSafeArea(edges: .bottom)
                     .navigationTitle("Full Map")
                     .navigationBarTitleDisplayMode(.inline)
@@ -127,6 +132,16 @@ struct ContentView: View {
                         }
                     }
                 }
+            }
+            .alert("Location Access Disabled", isPresented: $showLocationSettingsAlert) {
+                Button("Cancel", role: .cancel) {}
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        openURL(url)
+                    }
+                }
+            } message: {
+                Text("Enable location in iPhone Settings to center the map on your position.")
             }
         }
     }
@@ -199,7 +214,9 @@ struct ContentView: View {
                 cafes: viewModel.filteredCafes,
                 selectedCafe: $viewModel.selectedCafe,
                 locateRequestID: locateRequestID
-            )
+            ) {
+                showLocationSettingsAlert = true
+            }
             .clipShape(RoundedRectangle(cornerRadius: 14))
 
             Button {
@@ -218,7 +235,7 @@ struct ContentView: View {
 
     private var listCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("List View")
+            Text("Cafes")
                 .font(.headline)
             if viewModel.filteredCafes.isEmpty {
                 Text("No cafes match this filter.")
@@ -269,8 +286,11 @@ struct ContentView: View {
                             Text(item.title).tag(item)
                         }
                     }
+
                     TextField("Search cafes", text: $viewModel.searchText)
+
                     Toggle("Hide fully shaded", isOn: $viewModel.hideShaded)
+
                     Picker("Sort", selection: $viewModel.sortOrder) {
                         ForEach(SortOrder.allCases) { item in
                             Text(item.title).tag(item)
