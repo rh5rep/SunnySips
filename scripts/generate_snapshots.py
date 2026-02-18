@@ -44,6 +44,24 @@ def _parse_time(value: str | None) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _build_full_day_slots(base_dt: datetime, slot_minutes: int, days: int) -> list[datetime]:
+    slot_minutes = max(5, int(slot_minutes))
+    days = max(1, int(days))
+
+    base_local = base_dt.astimezone(CPH_TZ)
+    start_local = base_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    step = timedelta(minutes=slot_minutes)
+    slots_per_day = (24 * 60) // slot_minutes
+
+    slots: list[datetime] = []
+    for day_offset in range(days):
+        day_start_local = start_local + timedelta(days=day_offset)
+        for i in range(slots_per_day):
+            dt_local = day_start_local + (i * step)
+            slots.append(dt_local.astimezone(timezone.utc))
+    return slots
+
+
 def _bucket(sunny_fraction: float) -> str:
     if sunny_fraction >= 0.99:
         return "sunny"
@@ -150,8 +168,20 @@ def main() -> None:
     parser.add_argument(
         "--hours-ahead",
         type=int,
-        default=0,
-        help="Also produce hourly forecasts up to this many hours ahead.",
+        default=None,
+        help="Legacy mode: produce hourly forecasts up to this many hours ahead.",
+    )
+    parser.add_argument(
+        "--slot-minutes",
+        type=int,
+        default=15,
+        help="When not using --hours-ahead, generate full-day slots at this minute step.",
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=2,
+        help="How many whole local days of slots to generate (starting today in Copenhagen).",
     )
     args = parser.parse_args()
 
@@ -170,12 +200,24 @@ def main() -> None:
     site_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    time_slots = [base_dt]
-    for h in range(1, max(0, args.hours_ahead) + 1):
-        time_slots.append(base_dt + timedelta(hours=h))
+    if args.hours_ahead is not None and args.hours_ahead > 0:
+        time_slots = [base_dt]
+        for h in range(1, max(0, args.hours_ahead) + 1):
+            time_slots.append(base_dt + timedelta(hours=h))
+        slot_mode = f"legacy-hourly({args.hours_ahead}h)"
+    else:
+        time_slots = _build_full_day_slots(
+            base_dt=base_dt,
+            slot_minutes=args.slot_minutes,
+            days=args.days,
+        )
+        slot_mode = f"full-day({args.days} day, {args.slot_minutes} min)"
 
     area_index = []
-    print(f"Generating snapshots for {len(requested_areas)} areas and {len(time_slots)} time slot(s)...")
+    print(
+        f"Generating snapshots for {len(requested_areas)} areas and {len(time_slots)} time slot(s)"
+        f" mode={slot_mode}..."
+    )
 
     area_bboxes: dict[str, tuple[float, float, float, float]] = {}
     area_cafes: dict[str, list[dict]] = {}
@@ -258,6 +300,8 @@ def main() -> None:
             "generated_at_utc": generated_at.isoformat(),
             "area": area,
             "bbox": [min_lon, min_lat, max_lon, max_lat],
+            "slot_minutes": args.slot_minutes if args.hours_ahead is None else 60,
+            "slot_mode": slot_mode,
             "snapshots": snapshots,
         }
         _write_json(output_dir / f"{area}.json", payload)

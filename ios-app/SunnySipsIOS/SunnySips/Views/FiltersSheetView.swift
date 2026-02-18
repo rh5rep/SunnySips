@@ -1,11 +1,26 @@
 import SwiftUI
 
 struct FiltersSheetView: View {
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject var viewModel: SunnySipsViewModel
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("Quick Presets") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(SunnyQuickPreset.allCases) { preset in
+                                Button(preset.title) {
+                                    viewModel.applyQuickPreset(preset)
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
                 Section("Area") {
                     Picker("Neighborhood", selection: areaBinding) {
                         ForEach(SunnyArea.allCases) { area in
@@ -20,21 +35,21 @@ struct FiltersSheetView: View {
 
                     if !viewModel.filters.useNow {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Today only (15-minute steps)")
+                            Text("Now through +24 hours (15-minute steps)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             QuarterHourDatePicker(
                                 selection: selectedTimeBinding,
-                                range: Date.todayRange
+                                range: Date.predictionRange24h
                             )
-                            .frame(height: 160)
+                            .frame(height: 190)
                         }
                     }
                 }
 
                 Section("Ranking") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Buckets")
+                        Text("Conditions")
                             .font(.subheadline.weight(.semibold))
 
                         HStack(spacing: 8) {
@@ -55,7 +70,15 @@ struct FiltersSheetView: View {
                                 .buttonStyle(.plain)
                             }
                         }
+
+                        if let warning = viewModel.warningMessage {
+                            Text(warning)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
                     }
+
+                    Toggle("Favorites Only", isOn: favoritesOnlyBinding)
 
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -65,6 +88,8 @@ struct FiltersSheetView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Slider(value: minScoreBinding, in: 0 ... 100, step: 5)
+                            .accessibilityLabel("Minimum score")
+                            .accessibilityHint("Adjust minimum sunny score")
                     }
 
                     TextField(
@@ -92,9 +117,14 @@ struct FiltersSheetView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    if viewModel.isRefreshing {
-                        ProgressView()
-                            .controlSize(.small)
+                    HStack(spacing: 10) {
+                        if viewModel.isRefreshing {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Button("Close") {
+                            dismiss()
+                        }
                     }
                 }
             }
@@ -119,6 +149,13 @@ struct FiltersSheetView: View {
         Binding(
             get: { viewModel.filters.selectedTime },
             set: { viewModel.timeChanged($0) }
+        )
+    }
+
+    private var favoritesOnlyBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.filters.favoritesOnly },
+            set: { viewModel.favoritesOnlyChanged($0) }
         )
     }
 

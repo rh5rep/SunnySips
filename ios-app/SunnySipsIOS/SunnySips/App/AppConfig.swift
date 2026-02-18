@@ -18,4 +18,6 @@ enum AppConfig {
     }()
 
     static let requestLimit = 1200
+    static let overpassAPIURL = URL(string: "https://overpass-api.de/api/interpreter")!
+    static let overpassCacheTTL: TimeInterval = 4 * 60 * 60
 }

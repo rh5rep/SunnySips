@@ -27,6 +27,7 @@ struct SunnyFetchResult {
     let response: SunnyResponse
     let fetchedAt: Date
     let fromCache: Bool
+    let sunModelInterpolated: Bool
 }
 
 private struct CachedSunnyPayload: Codable {
@@ -104,7 +105,12 @@ actor SunnyAPIService {
             return result
         } catch {
             if let cached = try? loadCache(area: area) {
-                return SunnyFetchResult(response: cached.response, fetchedAt: cached.fetchedAt, fromCache: true)
+                return SunnyFetchResult(
+                    response: cached.response,
+                    fetchedAt: cached.fetchedAt,
+                    fromCache: true,
+                    sunModelInterpolated: false
+                )
             }
             if let apiError {
                 throw apiError
@@ -131,7 +137,12 @@ actor SunnyAPIService {
             throw SunnyAPIError.badResponse(http.statusCode)
         }
         let payload = try decoder.decode(SunnyResponse.self, from: data)
-        return SunnyFetchResult(response: payload, fetchedAt: Date(), fromCache: false)
+        return SunnyFetchResult(
+            response: payload,
+            fetchedAt: Date(),
+            fromCache: false,
+            sunModelInterpolated: false
+        )
     }
 
     private func fetchFromSnapshots(area: SunnyArea, requestedTime: Date?) async throws -> SunnyFetchResult {
@@ -153,10 +164,9 @@ actor SunnyAPIService {
             throw SunnyAPIError.emptySnapshot
         }
 
-        let target = (requestedTime ?? Date()).clampedToToday().roundedToQuarterHour()
-        let selected = payload.snapshots.min {
-            abs($0.timeUTC.timeIntervalSince(target)) < abs($1.timeUTC.timeIntervalSince(target))
-        } ?? payload.snapshots[0]
+        let target = (requestedTime ?? Date()).clampedToPredictionWindow()
+        let selectedResult = selectSnapshotForTarget(payload.snapshots, target: target)
+        let selected = selectedResult.snapshot
 
         let responsePayload = SunnyResponse(
             time: selected.timeUTC,
@@ -167,8 +177,91 @@ actor SunnyAPIService {
         return SunnyFetchResult(
             response: responsePayload,
             fetchedAt: payload.generatedAtUTC ?? Date(),
-            fromCache: false
+            fromCache: false,
+            sunModelInterpolated: selectedResult.interpolated
         )
+    }
+
+    private func selectSnapshotForTarget(_ snapshots: [AreaSnapshot], target: Date) -> (snapshot: AreaSnapshot, interpolated: Bool) {
+        let sorted = snapshots.sorted { $0.timeUTC < $1.timeUTC }
+        guard let first = sorted.first else { return (snapshots[0], false) }
+        guard let last = sorted.last else { return (first, false) }
+
+        if target <= first.timeUTC { return (first, false) }
+        if target >= last.timeUTC { return (last, false) }
+
+        for i in 0 ..< (sorted.count - 1) {
+            let lower = sorted[i]
+            let upper = sorted[i + 1]
+            if target == lower.timeUTC { return (lower, false) }
+            if target == upper.timeUTC { return (upper, false) }
+            if target > lower.timeUTC && target < upper.timeUTC {
+                let span = upper.timeUTC.timeIntervalSince(lower.timeUTC)
+                guard span > 0 else { return (lower, false) }
+                let w = target.timeIntervalSince(lower.timeUTC) / span
+                return (interpolate(lower: lower, upper: upper, weight: w, target: target), true)
+            }
+        }
+
+        let nearest = sorted.min {
+            abs($0.timeUTC.timeIntervalSince(target)) < abs($1.timeUTC.timeIntervalSince(target))
+        } ?? first
+        return (nearest, false)
+    }
+
+    private func interpolate(lower: AreaSnapshot, upper: AreaSnapshot, weight: Double, target: Date) -> AreaSnapshot {
+        let clampedWeight = max(0.0, min(1.0, weight))
+        let lowerByID = Dictionary(uniqueKeysWithValues: lower.cafes.map { ($0.id, $0) })
+        let upperByID = Dictionary(uniqueKeysWithValues: upper.cafes.map { ($0.id, $0) })
+
+        var merged: [SunnyCafe] = []
+        var seen = Set<String>()
+
+        for (id, a) in lowerByID {
+            guard let b = upperByID[id] else {
+                merged.append(a)
+                seen.insert(id)
+                continue
+            }
+            merged.append(interpolateCafe(a, b, weight: clampedWeight))
+            seen.insert(id)
+        }
+
+        for (id, b) in upperByID where !seen.contains(id) {
+            merged.append(b)
+        }
+
+        let cloud = lerp(lower.cloudCoverPct, upper.cloudCoverPct, clampedWeight)
+        return AreaSnapshot(
+            timeUTC: target,
+            cloudCoverPct: cloud,
+            cafes: merged
+        )
+    }
+
+    private func interpolateCafe(_ a: SunnyCafe, _ b: SunnyCafe, weight: Double) -> SunnyCafe {
+        let fraction = max(0.0, min(1.0, lerp(a.sunnyFraction, b.sunnyFraction, weight)))
+        let score = lerp(a.sunnyScore, b.sunnyScore, weight)
+        let elevation = lerp(a.sunElevationDeg, b.sunElevationDeg, weight)
+        let azimuth = lerp(a.sunAzimuthDeg, b.sunAzimuthDeg, weight)
+        let cloud = lerp(a.cloudCoverPct ?? 50.0, b.cloudCoverPct ?? 50.0, weight)
+
+        return SunnyCafe(
+            osmID: a.osmID ?? b.osmID,
+            name: a.name,
+            lon: a.lon,
+            lat: a.lat,
+            sunnyScore: score,
+            sunnyFraction: fraction,
+            inShadow: fraction <= 0.01,
+            sunElevationDeg: elevation,
+            sunAzimuthDeg: azimuth,
+            cloudCoverPct: cloud
+        )
+    }
+
+    private func lerp(_ a: Double, _ b: Double, _ t: Double) -> Double {
+        a + ((b - a) * t)
     }
 
     private func buildAPIURL(baseURL: URL, area: SunnyArea, requestedTime: Date?) throws -> URL {
@@ -188,7 +281,7 @@ actor SunnyAPIService {
         ]
 
         if let requestedTime {
-            let rounded = requestedTime.clampedToToday().roundedToQuarterHour()
+            let rounded = requestedTime.clampedToPredictionWindow()
             let dateString = ISO8601DateFormatter.internetDateTime.string(from: rounded)
             items.append(URLQueryItem(name: "time", value: dateString))
         }

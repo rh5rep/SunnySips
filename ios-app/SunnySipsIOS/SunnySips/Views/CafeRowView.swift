@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CafeRowView: View {
     let cafe: SunnyCafe
+    let isFavorite: Bool
     let onTap: () -> Void
 
     var body: some View {
@@ -17,12 +18,18 @@ struct CafeRowView: View {
                         .foregroundStyle(.primary)
                         .lineLimit(1)
 
-                    Text("Sunny \(cafe.sunnyPercent)%   Score \(Int(cafe.sunnyScore))")
+                    Text("\(condition.emoji) \(condition.rawValue)   Score \(cafe.scoreString)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
+
+                if isFavorite {
+                    Image(systemName: "heart.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ThemeColor.accentGold)
+                }
 
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
@@ -33,15 +40,15 @@ struct CafeRowView: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(cafe.name). Sunny \(cafe.sunnyPercent) percent. Score \(Int(cafe.sunnyScore)).")
+        .accessibilityLabel("\(cafe.name). \(condition.rawValue) adjusted for weather. Score \(cafe.scoreString).")
         .accessibilityHint("Centers map and opens details")
     }
 
     private var markerColor: Color {
-        switch cafe.bucket {
-        case .sunny: return ThemeColor.sunnyGreen
-        case .partial: return ThemeColor.partialAmber
-        case .shaded: return ThemeColor.shadedRed
-        }
+        condition.color
+    }
+
+    private var condition: EffectiveCondition {
+        cafe.effectiveCondition
     }
 }

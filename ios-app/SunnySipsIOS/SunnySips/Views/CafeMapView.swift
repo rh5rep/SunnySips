@@ -7,9 +7,13 @@ struct CafeMapView: UIViewRepresentable {
     @Binding var selectedCafe: SunnyCafe?
     @Binding var region: MKCoordinateRegion
     let locateRequestID: Int
+    let use3DMap: Bool
+    let effectiveCloudCover: Double
+    let warningMessage: String?
     var onRegionChanged: (MKCoordinateRegion) -> Void
     var onSelectCafe: (SunnyCafe) -> Void
     var onPermissionDenied: () -> Void
+    var onUserLocationUpdate: (CLLocationCoordinate2D) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -17,14 +21,15 @@ struct CafeMapView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView(frame: .zero)
-        mapView.preferredConfiguration = MKStandardMapConfiguration(elevationStyle: .flat)
+        mapView.preferredConfiguration = configuration(for3D: use3DMap)
         context.coordinator.mapView = mapView
+        context.coordinator.last3DState = use3DMap
         mapView.delegate = context.coordinator
         mapView.register(UserLocationAnnotationView.self, forAnnotationViewWithReuseIdentifier: UserLocationAnnotationView.reuseIdentifier)
         mapView.register(CafeAnnotationView.self, forAnnotationViewWithReuseIdentifier: CafeAnnotationView.reuseIdentifier)
         mapView.register(CafeClusterAnnotationView.self, forAnnotationViewWithReuseIdentifier: CafeClusterAnnotationView.reuseIdentifier)
-        mapView.showsUserLocation = true
-        mapView.pointOfInterestFilter = .excludingAll
+        applyBaseMapStyle(to: mapView)
+        mapView.isPitchEnabled = use3DMap
         mapView.setRegion(region, animated: false)
         context.coordinator.applyAnnotations(to: mapView, cafes: cafes)
         return mapView
@@ -38,6 +43,13 @@ struct CafeMapView: UIViewRepresentable {
             context.coordinator.lastLocateRequestID = locateRequestID
             context.coordinator.centerOnUser(in: mapView)
         }
+
+        if context.coordinator.last3DState != use3DMap {
+            context.coordinator.last3DState = use3DMap
+            mapView.preferredConfiguration = configuration(for3D: use3DMap)
+            mapView.isPitchEnabled = use3DMap
+        }
+        applyBaseMapStyle(to: mapView)
 
         if !mapView.region.approximatelyEquals(region) {
             context.coordinator.isProgrammaticRegionChange = true
@@ -57,6 +69,7 @@ struct CafeMapView: UIViewRepresentable {
         var annotationsByID: [String: CafePointAnnotation] = [:]
         var isProgrammaticRegionChange = false
         var lastLocateRequestID: Int = -1
+        var last3DState = false
 
         private let locationManager = CLLocationManager()
         private var lastLocationRequestAt: Date?
@@ -71,6 +84,8 @@ struct CafeMapView: UIViewRepresentable {
         func applyAnnotations(to mapView: MKMapView, cafes: [SunnyCafe]) {
             let incomingIDs = Set(cafes.map(\.id))
             var toRemove: [CafePointAnnotation] = []
+            let userCoordinate = mapView.userLocation.location?.coordinate
+            let isDimmed = parent.warningMessage != nil
 
             for (id, existing) in annotationsByID where !incomingIDs.contains(id) {
                 toRemove.append(existing)
@@ -82,13 +97,18 @@ struct CafeMapView: UIViewRepresentable {
 
             var toAdd: [CafePointAnnotation] = []
             for cafe in cafes {
+                let distance = cafe.distanceMeters(from: userCoordinate)
+                let condition = cafe.effectiveCondition(
+                    at: Date(),
+                    cloudCover: cafe.cloudCoverPct ?? parent.effectiveCloudCover
+                )
                 if let existing = annotationsByID[cafe.id] {
-                    existing.update(with: cafe)
+                    existing.update(with: cafe, condition: condition, distanceMeters: distance)
                     if let view = mapView.view(for: existing) as? CafeAnnotationView {
-                        view.apply(cafe: cafe)
+                        view.apply(cafe: cafe, condition: condition, isDimmed: isDimmed)
                     }
                 } else {
-                    let annotation = CafePointAnnotation(cafe: cafe)
+                    let annotation = CafePointAnnotation(cafe: cafe, condition: condition, distanceMeters: distance)
                     annotationsByID[cafe.id] = annotation
                     toAdd.append(annotation)
                 }
@@ -138,6 +158,9 @@ struct CafeMapView: UIViewRepresentable {
 
         func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
             guard let mapView, let location = locations.last else { return }
+            DispatchQueue.main.async {
+                self.parent.onUserLocationUpdate(location.coordinate)
+            }
             let newRegion = MKCoordinateRegion(
                 center: location.coordinate,
                 span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
@@ -176,7 +199,8 @@ struct CafeMapView: UIViewRepresentable {
                 withIdentifier: CafeAnnotationView.reuseIdentifier,
                 for: cafeAnnotation
             ) as! CafeAnnotationView
-            view.apply(cafe: cafeAnnotation.cafe)
+            let condition = cafeAnnotation.condition
+            view.apply(cafe: cafeAnnotation.cafe, condition: condition, isDimmed: parent.warningMessage != nil)
             return view
         }
 
@@ -220,19 +244,67 @@ struct CafeMapView: UIViewRepresentable {
     }
 }
 
-final class UserLocationAnnotationView: MKMarkerAnnotationView {
+private extension CafeMapView {
+    func configuration(for3D: Bool) -> MKMapConfiguration {
+        if for3D {
+            let config = MKHybridMapConfiguration(elevationStyle: .realistic)
+            config.pointOfInterestFilter = .excludingAll
+            config.showsTraffic = false
+            return config
+        }
+        let config = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
+        config.pointOfInterestFilter = .excludingAll
+        config.showsTraffic = false
+        return config
+    }
+
+    func applyBaseMapStyle(to mapView: MKMapView) {
+        mapView.pointOfInterestFilter = .excludingAll
+        mapView.showsUserLocation = true
+        mapView.showsBuildings = false
+        mapView.showsCompass = false
+        mapView.showsScale = false
+        mapView.showsTraffic = false
+    }
+}
+
+final class UserLocationAnnotationView: MKAnnotationView {
     static let reuseIdentifier = "UserLocationAnnotationView"
+
+    private let symbolView = UIImageView()
 
     override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
-        markerTintColor = .systemBlue
-        glyphImage = UIImage(systemName: "person.fill")
-        glyphTintColor = .white
-        titleVisibility = .hidden
-        subtitleVisibility = .hidden
+        frame = CGRect(x: 0, y: 0, width: 34, height: 34)
+        bounds = frame
+        backgroundColor = .systemBlue
+        layer.cornerRadius = 17
+        layer.borderWidth = 2.5
+        layer.borderColor = UIColor.white.cgColor
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.28
+        layer.shadowRadius = 3
+        layer.shadowOffset = CGSize(width: 0, height: 2)
+
+        symbolView.translatesAutoresizingMaskIntoConstraints = false
+        symbolView.image = UIImage(
+            systemName: "person.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .bold)
+        )?.withRenderingMode(.alwaysTemplate)
+        symbolView.tintColor = .white
+        symbolView.contentMode = .scaleAspectFit
+        addSubview(symbolView)
+        NSLayoutConstraint.activate([
+            symbolView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            symbolView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            symbolView.widthAnchor.constraint(equalToConstant: 16),
+            symbolView.heightAnchor.constraint(equalToConstant: 16),
+        ])
+
+        centerOffset = CGPoint(x: 0, y: 0)
         displayPriority = .required
-        canShowCallout = false
         clusteringIdentifier = nil
+        canShowCallout = false
         isAccessibilityElement = true
         accessibilityLabel = "Your location"
     }
@@ -245,21 +317,24 @@ final class UserLocationAnnotationView: MKMarkerAnnotationView {
 final class CafePointAnnotation: NSObject, MKAnnotation {
     let id: String
     private(set) var cafe: SunnyCafe
+    private(set) var condition: EffectiveCondition
     dynamic var coordinate: CLLocationCoordinate2D
 
-    init(cafe: SunnyCafe) {
+    init(cafe: SunnyCafe, condition: EffectiveCondition, distanceMeters: CLLocationDistance?) {
         self.id = cafe.id
         self.cafe = cafe
+        self.condition = condition
         self.coordinate = cafe.coordinate
         super.init()
+        _ = distanceMeters
     }
 
-    func update(with cafe: SunnyCafe) {
+    func update(with cafe: SunnyCafe, condition: EffectiveCondition, distanceMeters: CLLocationDistance?) {
         self.cafe = cafe
+        self.condition = condition
         self.coordinate = cafe.coordinate
+        _ = distanceMeters
     }
-
-    var title: String? { cafe.name }
 }
 
 final class CafeAnnotationView: MKAnnotationView {
@@ -277,36 +352,26 @@ final class CafeAnnotationView: MKAnnotationView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override var isSelected: Bool {
-        didSet {
-            layer.borderWidth = isSelected ? 2.0 : 0.0
-            layer.borderColor = UIColor.white.cgColor
-            alpha = isSelected ? 0.95 : 0.88
-        }
-    }
-
-    func apply(cafe: SunnyCafe) {
+    func apply(cafe: SunnyCafe, condition: EffectiveCondition, isDimmed: Bool) {
         let radius: CGFloat
-        if cafe.bucket == .sunny {
-            radius = 14
-        } else if cafe.bucket == .shaded {
-            radius = 10
-        } else {
-            radius = 12
+        switch condition {
+        case .sunny: radius = 7
+        case .partial: radius = 6
+        case .shaded: radius = 5
         }
 
         frame = CGRect(x: 0, y: 0, width: radius * 2, height: radius * 2)
         layer.cornerRadius = radius
-        layer.backgroundColor = UIColor.markerColor(for: cafe.sunnyFraction).cgColor
-        alpha = isSelected ? 0.95 : 0.88
+        layer.backgroundColor = UIColor(condition.color).cgColor
+        alpha = isSelected ? 1.0 : (isDimmed ? 0.58 : 0.92)
         layer.shadowColor = UIColor.black.cgColor
         layer.shadowOpacity = 0.15
         layer.shadowRadius = 2
         layer.shadowOffset = CGSize(width: 0, height: 1)
 
         isAccessibilityElement = true
-        accessibilityLabel = "\(cafe.name), \(cafe.sunnyPercent) percent sunny, score \(Int(cafe.sunnyScore))"
-        accessibilityHint = "Double tap for cafe details."
+        accessibilityLabel = "\(cafe.name), \(condition.rawValue) adjusted for weather, score \(Int(cafe.sunnyScore))"
+        accessibilityHint = "Double tap for quick info, then open details."
     }
 }
 
@@ -317,20 +382,24 @@ final class CafeClusterAnnotationView: MKAnnotationView {
 
     override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
-        frame = CGRect(x: 0, y: 0, width: 34, height: 34)
-        layer.cornerRadius = 17
-        layer.backgroundColor = UIColor.systemGray3.withAlphaComponent(0.92).cgColor
-        layer.borderWidth = 1
-        layer.borderColor = UIColor.white.withAlphaComponent(0.75).cgColor
+        frame = CGRect(x: 0, y: 0, width: 38, height: 38)
+        layer.cornerRadius = 19
+        layer.backgroundColor = UIColor.black.withAlphaComponent(0.64).cgColor
+        layer.borderWidth = 1.5
+        layer.borderColor = UIColor.white.withAlphaComponent(0.85).cgColor
         layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.12
-        layer.shadowOffset = CGSize(width: 0, height: 1)
-        layer.shadowRadius = 2
+        layer.shadowOpacity = 0.25
+        layer.shadowOffset = CGSize(width: 0, height: 2)
+        layer.shadowRadius = 3
 
         label.frame = bounds
         label.textAlignment = .center
-        label.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
-        label.textColor = .label
+        label.font = UIFont.systemFont(ofSize: 14, weight: .bold)
+        label.textColor = .white
+        label.layer.shadowColor = UIColor.black.cgColor
+        label.layer.shadowOpacity = 0.45
+        label.layer.shadowOffset = CGSize(width: 0, height: 1)
+        label.layer.shadowRadius = 1
         addSubview(label)
 
         isAccessibilityElement = true

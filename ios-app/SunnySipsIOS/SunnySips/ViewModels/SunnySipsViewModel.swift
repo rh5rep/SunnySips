@@ -2,6 +2,7 @@ import Foundation
 import MapKit
 import UIKit
 import SwiftUI
+import CoreLocation
 
 @MainActor
 final class SunnySipsViewModel: ObservableObject {
@@ -10,7 +11,18 @@ final class SunnySipsViewModel: ObservableObject {
     @Published private(set) var stats: SunnyStatsSummary = .empty
     @Published private(set) var cloudCoverPct: Double = 0
     @Published private(set) var updatedAt: Date?
+    @Published private(set) var sunModelTime: Date?
+    @Published private(set) var sunModelInterpolated = false
+    @Published private(set) var weatherUpdatedAt: Date?
+    @Published private(set) var weatherSource = "Snapshot"
+    @Published private(set) var usingLiveWeather = false
+    @Published private(set) var weatherFallbackMessage: String?
     @Published private(set) var usingCachedData = false
+    @Published private(set) var weatherIsForecast = false
+    @Published private(set) var isFuturePrediction = false
+
+    @Published private(set) var userLocation: CLLocationCoordinate2D?
+    @Published private(set) var favoriteCafeIDs: Set<String> = []
 
     @Published var selectedCafe: SunnyCafe?
     @Published var mapRegion: MKCoordinateRegion = SunnyArea.coreCopenhagen.bbox.region
@@ -23,14 +35,19 @@ final class SunnySipsViewModel: ObservableObject {
     @Published var isFullMapPresented = false
     @Published var showLocationSettingsPrompt = false
     @Published var errorMessage: String?
+    @Published var warningMessage: String?
+    @Published var use3DMap = false
 
     @Published var locateUserRequestID = 0
 
     private let apiService = SunnyAPIService()
+    private let liveWeatherService = LiveWeatherService()
     private var allCafes: [SunnyCafe] = []
     private var hasLoaded = false
     private var searchTask: Task<Void, Never>?
     private var autoRefreshTask: Task<Void, Never>?
+
+    private let favoritesDefaultsKey = "sunnysips.favoriteCafeIDs"
 
     var areaTitle: String { filters.area.title }
 
@@ -47,14 +64,47 @@ final class SunnySipsViewModel: ObservableObject {
         return "Updated \(formatter.localizedString(for: updatedAt, relativeTo: Date()))"
     }
 
+    var sunModelBadgeText: String {
+        let base = "Sun model \(timeLabel(from: sunModelTime))"
+        var tags: [String] = []
+        if sunModelInterpolated { tags.append("interp") }
+        if isFuturePrediction { tags.append("forecast") }
+        if tags.isEmpty { return base }
+        return "\(base) (\(tags.joined(separator: ", ")))"
+    }
+
+    var weatherBadgeText: String {
+        if usingLiveWeather {
+            let mode = weatherIsForecast ? "forecast" : "live"
+            return "\(weatherSource) \(mode) \(timeLabel(from: weatherUpdatedAt))"
+        }
+        if let weatherFallbackMessage {
+            return weatherFallbackMessage
+        }
+        return "Weather snapshot"
+    }
+
     var blockingError: String? {
         guard allCafes.isEmpty else { return nil }
         return errorMessage
     }
 
+    var favoriteCafes: [SunnyCafe] {
+        allCafes
+            .filter { favoriteCafeIDs.contains($0.id) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var futureHourOffset: Double {
+        let now = Date().roundedDownToQuarterHour()
+        let seconds = filters.selectedTime.timeIntervalSince(now)
+        return max(0.0, min(24.0, (seconds / 3600.0).rounded()))
+    }
+
     func onAppear() async {
         guard !hasLoaded else { return }
         hasLoaded = true
+        loadFavoritesFromDefaults()
         mapRegion = filters.area.bbox.region
         visibleRegion = mapRegion
         await reloadFromAPI()
@@ -87,6 +137,7 @@ final class SunnySipsViewModel: ObservableObject {
         filters.minScore = 0
         filters.searchText = ""
         filters.sort = .bestScore
+        filters.favoritesOnly = false
         applyLocalFilters()
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
@@ -101,16 +152,24 @@ final class SunnySipsViewModel: ObservableObject {
 
     func useNowChanged(_ useNow: Bool) {
         filters.useNow = useNow
-        if useNow {
-            Task { await reloadFromAPI() }
-        } else {
-            filters.selectedTime = filters.selectedTime.clampedToToday().roundedToQuarterHour()
-            Task { await reloadFromAPI() }
+        if !useNow {
+            filters.selectedTime = filters.selectedTime.clampedToPredictionWindow()
         }
+        Task { await reloadFromAPI() }
+    }
+
+    func togglePredictFutureMode() {
+        if filters.useNow {
+            filters.useNow = false
+            filters.selectedTime = Date().addingTimeInterval(60 * 60).clampedToPredictionWindow()
+        } else {
+            filters.useNow = true
+        }
+        Task { await reloadFromAPI() }
     }
 
     func timeChanged(_ date: Date) {
-        let rounded = date.clampedToToday().roundedToQuarterHour()
+        let rounded = date.clampedToPredictionWindow()
         if rounded != filters.selectedTime {
             filters.selectedTime = rounded
         }
@@ -124,6 +183,11 @@ final class SunnySipsViewModel: ObservableObject {
         } else {
             filters.selectedBuckets.insert(bucket)
         }
+        applyLocalFilters()
+    }
+
+    func favoritesOnlyChanged(_ value: Bool) {
+        filters.favoritesOnly = value
         applyLocalFilters()
     }
 
@@ -141,7 +205,7 @@ final class SunnySipsViewModel: ObservableObject {
         filters.searchText = text
         searchTask?.cancel()
         searchTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 280_000_000)
             guard let self, !Task.isCancelled else { return }
             self.applyLocalFilters()
         }
@@ -176,6 +240,70 @@ final class SunnySipsViewModel: ObservableObject {
         showLocationSettingsPrompt = true
     }
 
+    func updateUserLocation(_ coordinate: CLLocationCoordinate2D) {
+        userLocation = coordinate
+        if filters.sort == .distanceFromUser {
+            applyLocalFilters()
+        }
+    }
+
+    func toggleFavorite(_ cafe: SunnyCafe) {
+        if favoriteCafeIDs.contains(cafe.id) {
+            favoriteCafeIDs.remove(cafe.id)
+        } else {
+            favoriteCafeIDs.insert(cafe.id)
+        }
+        persistFavoritesToDefaults()
+        applyLocalFilters()
+    }
+
+    func isFavorite(_ cafe: SunnyCafe) -> Bool {
+        favoriteCafeIDs.contains(cafe.id)
+    }
+
+    func toggleMapStyle() {
+        use3DMap.toggle()
+    }
+
+    func setFutureHourOffset(_ offsetHours: Double) {
+        let clamped = max(0.0, min(24.0, offsetHours))
+        let now = Date().roundedDownToQuarterHour()
+        let candidate = now.addingTimeInterval(clamped * 3600.0).roundedDownToQuarterHour()
+        timeChanged(candidate)
+    }
+
+    func applyQuickPreset(_ preset: SunnyQuickPreset) {
+        switch preset {
+        case .bestRightNow:
+            filters.useNow = true
+            filters.selectedBuckets = [.sunny]
+            filters.favoritesOnly = false
+            filters.sort = .bestScore
+            filters.minScore = 20
+        case .sunnyAfternoon:
+            filters.useNow = false
+            let afternoon = Date.copenhagenCalendar.date(
+                bySettingHour: 15,
+                minute: 0,
+                second: 0,
+                of: Date()
+            ) ?? Date().addingTimeInterval(2 * 3600)
+            filters.selectedTime = afternoon.clampedToPredictionWindow()
+            filters.selectedBuckets = [.sunny, .partial]
+            filters.favoritesOnly = false
+            filters.sort = .mostSunny
+            filters.minScore = 10
+        case .favoritesNearMe:
+            filters.useNow = true
+            filters.selectedBuckets = [.sunny, .partial, .shaded]
+            filters.favoritesOnly = true
+            filters.sort = .distanceFromUser
+            filters.minScore = 0
+        }
+        applyLocalFilters()
+        Task { await reloadFromAPI() }
+    }
+
     private func reloadFromAPI(silent: Bool = false) async {
         if silent {
             isRefreshing = true
@@ -186,12 +314,42 @@ final class SunnySipsViewModel: ObservableObject {
         errorMessage = nil
 
         do {
-            let requestedTime = filters.useNow ? nil : filters.selectedTime
-            let result = try await apiService.fetchSunny(area: filters.area, requestedTime: requestedTime)
+            let selectedTargetTime = filters.useNow ? Date() : filters.selectedTime.clampedToPredictionWindow()
+            let requestedTimeForBackend = filters.useNow ? nil : selectedTargetTime
+            isFuturePrediction = selectedTargetTime > Date().addingTimeInterval(15 * 60)
+
+            let result = try await apiService.fetchSunny(area: filters.area, requestedTime: requestedTimeForBackend)
             usingCachedData = result.fromCache
             updatedAt = result.fetchedAt
-            cloudCoverPct = result.response.cloudCoverPct
-            allCafes = result.response.cafes
+            sunModelTime = result.response.time
+            sunModelInterpolated = result.sunModelInterpolated
+            var effectiveCloudCover = result.response.cloudCoverPct
+            var effectiveCafes = result.response.cafes
+            usingLiveWeather = false
+            weatherUpdatedAt = nil
+            weatherFallbackMessage = nil
+            weatherSource = "Snapshot"
+            weatherIsForecast = isFuturePrediction
+
+            if let liveWeather = try? await liveWeatherService.fetchCloudCover(
+                area: filters.area,
+                at: selectedTargetTime
+            ) {
+                effectiveCloudCover = liveWeather.cloudCoverPct
+                effectiveCafes = result.response.cafes.map { $0.applyingCloudCover(liveWeather.cloudCoverPct) }
+                usingLiveWeather = true
+                weatherUpdatedAt = liveWeather.fetchedAt
+                weatherSource = liveWeather.source
+                weatherIsForecast = liveWeather.isForecast
+            } else {
+                weatherFallbackMessage = "Weather unavailable - using snapshot"
+            }
+
+            cloudCoverPct = effectiveCloudCover
+            allCafes = effectiveCafes
+            warningMessage = effectiveCloudCover >= 85.0
+                ? "Heavy clouds - effectively shaded at selected time"
+                : nil
 
             if result.fromCache {
                 errorMessage = "Offline mode: showing cached cafes."
@@ -214,11 +372,12 @@ final class SunnySipsViewModel: ObservableObject {
         let search = filters.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let selectedBuckets = filters.selectedBuckets
         var filtered = allCafes
-            .filter { selectedBuckets.isEmpty || selectedBuckets.contains($0.bucket.filterValue) }
+            .filter { selectedBuckets.isEmpty || selectedBuckets.contains(effectiveCondition(for: $0).filterValue) }
             .filter { $0.sunnyScore >= filters.minScore }
+            .filter { !filters.favoritesOnly || favoriteCafeIDs.contains($0.id) }
 
         if !search.isEmpty {
-            filtered = filtered.filter { $0.name.localizedCaseInsensitiveContains(search) }
+            filtered = filtered.filter { $0.matchesFuzzy(search) }
         }
 
         switch filters.sort {
@@ -231,13 +390,32 @@ final class SunnySipsViewModel: ObservableObject {
             }
         case .mostSunny:
             filtered.sort {
-                if $0.sunnyFraction != $1.sunnyFraction {
-                    return $0.sunnyFraction > $1.sunnyFraction
+                let left = conditionRank(effectiveCondition(for: $0))
+                let right = conditionRank(effectiveCondition(for: $1))
+                if left != right {
+                    return left > right
                 }
                 return $0.sunnyScore > $1.sunnyScore
             }
         case .nameAZ:
             filtered.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .distanceFromUser:
+            filtered.sort {
+                let reference = userLocation ?? filters.area.bbox.center
+                let left = $0.distanceMeters(from: reference) ?? .greatestFiniteMagnitude
+                let right = $1.distanceMeters(from: reference) ?? .greatestFiniteMagnitude
+                if left != right {
+                    return left < right
+                }
+                return $0.sunnyScore > $1.sunnyScore
+            }
+        case .popularity:
+            filtered.sort {
+                if $0.popularityScore != $1.popularityScore {
+                    return $0.popularityScore > $1.popularityScore
+                }
+                return $0.sunnyScore > $1.sunnyScore
+            }
         }
 
         cafes = filtered
@@ -258,7 +436,7 @@ final class SunnySipsViewModel: ObservableObject {
         var scoreSum = 0.0
 
         for cafe in cafes {
-            switch cafe.bucket {
+            switch effectiveCondition(for: cafe) {
             case .sunny: sunny += 1
             case .partial: partial += 1
             case .shaded: shaded += 1
@@ -273,5 +451,47 @@ final class SunnySipsViewModel: ObservableObject {
             shaded: shaded,
             averageScore: Int((scoreSum / Double(cafes.count)).rounded())
         )
+    }
+
+    private func timeLabel(from date: Date?) -> String {
+        guard let date else { return "--:--" }
+        let formatter = DateFormatter()
+        formatter.calendar = Date.copenhagenCalendar
+        formatter.timeZone = TimeZone(identifier: "Europe/Copenhagen")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private func effectiveCondition(for cafe: SunnyCafe) -> EffectiveCondition {
+        let cloud = cafe.cloudCoverPct ?? cloudCoverPct
+        let time = filters.useNow ? Date() : filters.selectedTime
+        return cafe.effectiveCondition(at: time, cloudCover: cloud)
+    }
+
+    private func conditionRank(_ condition: EffectiveCondition) -> Int {
+        switch condition {
+        case .sunny: return 2
+        case .partial: return 1
+        case .shaded: return 0
+        }
+    }
+
+    private func loadFavoritesFromDefaults() {
+        let defaults = UserDefaults.standard
+        guard let data = defaults.data(forKey: favoritesDefaultsKey),
+              let ids = try? JSONDecoder().decode([String].self, from: data)
+        else {
+            favoriteCafeIDs = []
+            return
+        }
+        favoriteCafeIDs = Set(ids)
+    }
+
+    private func persistFavoritesToDefaults() {
+        let ids = Array(favoriteCafeIDs).sorted()
+        let defaults = UserDefaults.standard
+        if let data = try? JSONEncoder().encode(ids) {
+            defaults.set(data, forKey: favoritesDefaultsKey)
+        }
     }
 }

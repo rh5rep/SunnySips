@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import MapKit
+import SwiftUI
 
 struct SunnyResponse: Codable {
     let time: Date
@@ -13,6 +14,36 @@ struct SunnyResponse: Codable {
         case cloudCoverPct = "cloud_cover_pct"
         case count
         case cafes
+    }
+}
+
+enum EffectiveCondition: String, Codable, CaseIterable {
+    case sunny = "Sunny"
+    case partial = "Partial"
+    case shaded = "Shaded"
+
+    var color: Color {
+        switch self {
+        case .sunny: return ThemeColor.sunnyGreen
+        case .partial: return ThemeColor.partialAmber
+        case .shaded: return ThemeColor.shadedRed
+        }
+    }
+
+    var emoji: String {
+        switch self {
+        case .sunny: return "☀️"
+        case .partial: return "⛅"
+        case .shaded: return "☁️"
+        }
+    }
+
+    var filterValue: SunnyBucketFilter {
+        switch self {
+        case .sunny: return .sunny
+        case .partial: return .partial
+        case .shaded: return .shaded
+        }
     }
 }
 
@@ -56,10 +87,65 @@ struct SunnyCafe: Codable, Identifiable, Hashable {
         Int((sunnyFraction * 100).rounded())
     }
 
+    var sunnyPercentString: String {
+        String(format: "%.1f%%", sunnyFraction * 100.0)
+    }
+
+    var scoreString: String {
+        String(format: "%.1f", sunnyScore)
+    }
+
+    var popularityScore: Double {
+        // Stable pseudo-popularity so sorting is deterministic without a backend metric.
+        let basis = id.unicodeScalars.reduce(into: UInt64(1469598103934665603)) { hash, scalar in
+            hash ^= UInt64(scalar.value)
+            hash = hash &* 1099511628211
+        }
+        return Double((basis % 500) + 500) / 200.0 // 2.5 ... 5.0
+    }
+
     var bucket: SunnyBucket {
         if sunnyFraction >= 0.99 { return .sunny }
         if sunnyFraction <= 0.01 { return .shaded }
         return .partial
+    }
+
+    func sunnyScore(at time: Date, cloudCover: Double) -> Double {
+        _ = time // Time is already represented by this snapshot row.
+        let clampedCloud = max(0.0, min(100.0, cloudCover))
+        let weatherFactor = 1.0 - (clampedCloud / 100.0)
+        return max(0.0, min(100.0, (100.0 * sunnyFraction * weatherFactor * 10.0).rounded() / 10.0))
+    }
+
+    func effectiveCondition(at time: Date, cloudCover: Double) -> EffectiveCondition {
+        let score = sunnyScore(at: time, cloudCover: cloudCover)
+        if cloudCover >= 85.0 { return .shaded }
+        if score >= 55.0 { return .sunny }
+        if score >= 20.0 { return .partial }
+        return .shaded
+    }
+
+    var effectiveCondition: EffectiveCondition {
+        effectiveCondition(at: Date(), cloudCover: cloudCoverPct ?? 50.0)
+    }
+
+    func applyingCloudCover(_ cloudCover: Double) -> SunnyCafe {
+        let clampedCloud = max(0.0, min(100.0, cloudCover))
+        let weatherFactor = 1.0 - (clampedCloud / 100.0)
+        let recomputedScore = max(0.0, min(100.0, (100.0 * sunnyFraction * weatherFactor * 10.0).rounded() / 10.0))
+
+        return SunnyCafe(
+            osmID: osmID,
+            name: name,
+            lon: lon,
+            lat: lat,
+            sunnyScore: recomputedScore,
+            sunnyFraction: sunnyFraction,
+            inShadow: inShadow,
+            sunElevationDeg: sunElevationDeg,
+            sunAzimuthDeg: sunAzimuthDeg,
+            cloudCoverPct: clampedCloud
+        )
     }
 }
 
@@ -101,12 +187,18 @@ enum SunnyBucketFilter: String, CaseIterable, Identifiable, Hashable {
         case .shaded: return "Shaded"
         }
     }
+
+    var adjustedTitle: String {
+        "\(title) (weather-adjusted)"
+    }
 }
 
 enum SunnySortOption: String, CaseIterable, Identifiable {
     case bestScore
     case mostSunny
     case nameAZ
+    case distanceFromUser
+    case popularity
 
     var id: String { rawValue }
 
@@ -115,6 +207,24 @@ enum SunnySortOption: String, CaseIterable, Identifiable {
         case .bestScore: return "Best Score"
         case .mostSunny: return "Most Sunny"
         case .nameAZ: return "Name A-Z"
+        case .distanceFromUser: return "Distance from User"
+        case .popularity: return "Popularity"
+        }
+    }
+}
+
+enum SunnyQuickPreset: String, CaseIterable, Identifiable {
+    case bestRightNow
+    case sunnyAfternoon
+    case favoritesNearMe
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .bestRightNow: return "Best Right Now"
+        case .sunnyAfternoon: return "Sunny Afternoon"
+        case .favoritesNearMe: return "Favorites Near Me"
         }
     }
 }
@@ -197,6 +307,7 @@ struct SunnyFilters {
     var minScore: Double = 0
     var searchText: String = ""
     var sort: SunnySortOption = .bestScore
+    var favoritesOnly: Bool = false
 }
 
 extension Date {
@@ -206,12 +317,10 @@ extension Date {
         return calendar
     }
 
-    static var todayRange: ClosedRange<Date> {
-        let cal = Date.copenhagenCalendar
-        let now = Date()
-        let start = cal.startOfDay(for: now)
-        let end = cal.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) ?? now
-        return start ... end
+    static var predictionRange24h: ClosedRange<Date> {
+        let now = Date().roundedDownToQuarterHour()
+        let end = now.addingTimeInterval(24 * 60 * 60)
+        return now ... end
     }
 
     func roundedToQuarterHour() -> Date {
@@ -220,11 +329,17 @@ extension Date {
         return Date(timeIntervalSince1970: rounded)
     }
 
-    func clampedToToday() -> Date {
-        let range = Date.todayRange
-        if self < range.lowerBound { return range.lowerBound.roundedToQuarterHour() }
-        if self > range.upperBound { return range.upperBound.roundedToQuarterHour() }
-        return roundedToQuarterHour()
+    func roundedDownToQuarterHour() -> Date {
+        let interval: TimeInterval = 15 * 60
+        let roundedDown = floor(timeIntervalSince1970 / interval) * interval
+        return Date(timeIntervalSince1970: roundedDown)
+    }
+
+    func clampedToPredictionWindow() -> Date {
+        let range = Date.predictionRange24h
+        if self < range.lowerBound { return range.lowerBound.roundedDownToQuarterHour() }
+        if self > range.upperBound { return range.upperBound.roundedDownToQuarterHour() }
+        return roundedDownToQuarterHour()
     }
 }
 
@@ -245,6 +360,73 @@ extension MKCoordinateRegion {
             abs(center.longitude - other.center.longitude) < tolerance &&
             abs(span.latitudeDelta - other.span.latitudeDelta) < tolerance &&
             abs(span.longitudeDelta - other.span.longitudeDelta) < tolerance
+    }
+}
+
+extension SunnyCafe {
+    func distanceMeters(from location: CLLocationCoordinate2D?) -> CLLocationDistance? {
+        guard let location else { return nil }
+        let current = CLLocation(latitude: location.latitude, longitude: location.longitude)
+        let target = CLLocation(latitude: lat, longitude: lon)
+        return current.distance(from: target)
+    }
+
+    func matchesFuzzy(_ rawQuery: String) -> Bool {
+        let query = rawQuery.normalizedForSearch
+        guard !query.isEmpty else { return true }
+        let value = name.normalizedForSearch
+
+        if value.contains(query) {
+            return true
+        }
+
+        let valueTokens = value.split(separator: " ")
+        if valueTokens.contains(where: { $0.contains(query) }) {
+            return true
+        }
+
+        // Light fuzzy matching to catch typos such as "esspreso".
+        if query.count >= 3 {
+            if value.levenshteinDistance(to: query) <= 2 {
+                return true
+            }
+            if valueTokens.contains(where: { String($0).levenshteinDistance(to: query) <= 1 }) {
+                return true
+            }
+        }
+
+        return false
+    }
+}
+
+extension String {
+    var normalizedForSearch: String {
+        folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "[^a-z0-9 ]", with: "", options: .regularExpression)
+    }
+
+    func levenshteinDistance(to other: String) -> Int {
+        let a = Array(self)
+        let b = Array(other)
+        guard !a.isEmpty else { return b.count }
+        guard !b.isEmpty else { return a.count }
+
+        var distances = Array(0 ... b.count)
+        for (i, ca) in a.enumerated() {
+            var previous = distances[0]
+            distances[0] = i + 1
+            for (j, cb) in b.enumerated() {
+                let temp = distances[j + 1]
+                if ca == cb {
+                    distances[j + 1] = previous
+                } else {
+                    distances[j + 1] = Swift.min(previous, distances[j], temp) + 1
+                }
+                previous = temp
+            }
+        }
+        return distances[b.count]
     }
 }
 
