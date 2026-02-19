@@ -14,6 +14,7 @@ final class SunnySipsViewModel: ObservableObject {
     @Published private(set) var sunModelTime: Date?
     @Published private(set) var sunModelInterpolated = false
     @Published private(set) var weatherUpdatedAt: Date?
+    @Published private(set) var weatherTargetAt: Date?
     @Published private(set) var weatherSource = "Snapshot"
     @Published private(set) var usingLiveWeather = false
     @Published private(set) var weatherFallbackMessage: String?
@@ -48,8 +49,38 @@ final class SunnySipsViewModel: ObservableObject {
     private var autoRefreshTask: Task<Void, Never>?
 
     private let favoritesDefaultsKey = "sunnysips.favoriteCafeIDs"
+    private let copenhagenTimeZone = TimeZone(identifier: "Europe/Copenhagen") ?? .current
 
     var areaTitle: String { filters.area.title }
+    var quickJumpMinutes: [Int] { [30, 60, 120, 180, 360] }
+
+    var showCloudOverlay: Bool {
+        cloudCoverPct >= 50.0 || warningMessage != nil
+    }
+
+    var predictionRange: ClosedRange<Date> {
+        predictionRangeForCurrentArea()
+    }
+
+    var selectedForecastTimeText: String {
+        let formatter = DateFormatter()
+        formatter.calendar = Date.copenhagenCalendar
+        formatter.timeZone = copenhagenTimeZone
+        formatter.dateFormat = "EEE HH:mm"
+        return formatter.string(from: selectedTargetTime)
+    }
+
+    var selectedForecastShortTimeText: String {
+        let formatter = DateFormatter()
+        formatter.calendar = Date.copenhagenCalendar
+        formatter.timeZone = copenhagenTimeZone
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: selectedTargetTime)
+    }
+
+    var nightBannerText: String? {
+        isDaylight(at: selectedTargetTime) ? nil : "Nighttime - no sun possible at selected time"
+    }
 
     var subtitleLine: String {
         let count = cafes.count
@@ -64,6 +95,14 @@ final class SunnySipsViewModel: ObservableObject {
         return "Updated \(formatter.localizedString(for: updatedAt, relativeTo: Date()))"
     }
 
+    var snapshotFreshnessText: String {
+        guard let updatedAt else { return "Snapshot unknown" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        let relative = formatter.localizedString(for: updatedAt, relativeTo: Date())
+        return "Snapshot \(relative)"
+    }
+
     var sunModelBadgeText: String {
         let base = "Sun model \(timeLabel(from: sunModelTime))"
         var tags: [String] = []
@@ -76,12 +115,45 @@ final class SunnySipsViewModel: ObservableObject {
     var weatherBadgeText: String {
         if usingLiveWeather {
             let mode = weatherIsForecast ? "forecast" : "live"
+            if weatherIsForecast {
+                return "\(weatherSource) \(mode) for \(timeLabel(from: weatherTargetAt))"
+            }
             return "\(weatherSource) \(mode) \(timeLabel(from: weatherUpdatedAt))"
         }
         if let weatherFallbackMessage {
             return weatherFallbackMessage
         }
         return "Weather snapshot"
+    }
+
+    var weatherFreshnessText: String {
+        if usingLiveWeather {
+            if weatherIsForecast {
+                return "Forecast for \(timeLabel(from: weatherTargetAt))"
+            }
+            return "Weather live \(timeLabel(from: weatherUpdatedAt))"
+        }
+        if weatherFallbackMessage != nil {
+            return "Weather snapshot fallback"
+        }
+        return "Weather snapshot"
+    }
+
+    var weatherPillText: String {
+        if usingLiveWeather {
+            if weatherIsForecast {
+                return "Forecast data"
+            }
+            return "Live data"
+        }
+        return "Cached data"
+    }
+
+    var weatherPillSymbol: String {
+        if usingLiveWeather {
+            return weatherIsForecast ? "clock.badge.checkmark" : "dot.radiowaves.left.and.right"
+        }
+        return "archivebox.fill"
     }
 
     var blockingError: String? {
@@ -95,10 +167,27 @@ final class SunnySipsViewModel: ObservableObject {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    var futureHourOffset: Double {
-        let now = Date().roundedDownToQuarterHour()
-        let seconds = filters.selectedTime.timeIntervalSince(now)
-        return max(0.0, min(24.0, (seconds / 3600.0).rounded()))
+    func jumpForward(minutes: Int) {
+        let base = filters.useNow ? Date().roundedDownToQuarterHour() : filters.selectedTime
+        let rawTarget = base.addingTimeInterval(Double(minutes) * 60.0)
+        let clampedTarget = clampToPredictionRange(rawTarget)
+        guard clampedTarget != base else { return }
+
+        filters.useNow = false
+        timeChanged(clampedTarget)
+    }
+
+    func setForecastTime(_ date: Date) {
+        filters.useNow = false
+        timeChanged(date)
+    }
+
+    func canJumpForward(minutes: Int) -> Bool {
+        let base = filters.useNow ? Date().roundedDownToQuarterHour() : filters.selectedTime
+        let rawTarget = base.addingTimeInterval(Double(minutes) * 60.0)
+        let clampedTarget = clampToPredictionRange(rawTarget)
+        guard clampedTarget > base else { return false }
+        return isDaylight(at: clampedTarget)
     }
 
     func onAppear() async {
@@ -153,7 +242,7 @@ final class SunnySipsViewModel: ObservableObject {
     func useNowChanged(_ useNow: Bool) {
         filters.useNow = useNow
         if !useNow {
-            filters.selectedTime = filters.selectedTime.clampedToPredictionWindow()
+            filters.selectedTime = clampToPredictionRange(filters.selectedTime)
         }
         Task { await reloadFromAPI() }
     }
@@ -161,7 +250,7 @@ final class SunnySipsViewModel: ObservableObject {
     func togglePredictFutureMode() {
         if filters.useNow {
             filters.useNow = false
-            filters.selectedTime = Date().addingTimeInterval(60 * 60).clampedToPredictionWindow()
+            filters.selectedTime = clampToPredictionRange(Date().addingTimeInterval(60 * 60))
         } else {
             filters.useNow = true
         }
@@ -169,7 +258,7 @@ final class SunnySipsViewModel: ObservableObject {
     }
 
     func timeChanged(_ date: Date) {
-        let rounded = date.clampedToPredictionWindow()
+        let rounded = clampToPredictionRange(date)
         if rounded != filters.selectedTime {
             filters.selectedTime = rounded
         }
@@ -265,13 +354,6 @@ final class SunnySipsViewModel: ObservableObject {
         use3DMap.toggle()
     }
 
-    func setFutureHourOffset(_ offsetHours: Double) {
-        let clamped = max(0.0, min(24.0, offsetHours))
-        let now = Date().roundedDownToQuarterHour()
-        let candidate = now.addingTimeInterval(clamped * 3600.0).roundedDownToQuarterHour()
-        timeChanged(candidate)
-    }
-
     func applyQuickPreset(_ preset: SunnyQuickPreset) {
         switch preset {
         case .bestRightNow:
@@ -288,7 +370,7 @@ final class SunnySipsViewModel: ObservableObject {
                 second: 0,
                 of: Date()
             ) ?? Date().addingTimeInterval(2 * 3600)
-            filters.selectedTime = afternoon.clampedToPredictionWindow()
+            filters.selectedTime = clampToPredictionRange(afternoon)
             filters.selectedBuckets = [.sunny, .partial]
             filters.favoritesOnly = false
             filters.sort = .mostSunny
@@ -314,7 +396,7 @@ final class SunnySipsViewModel: ObservableObject {
         errorMessage = nil
 
         do {
-            let selectedTargetTime = filters.useNow ? Date() : filters.selectedTime.clampedToPredictionWindow()
+            let selectedTargetTime = filters.useNow ? Date() : clampToPredictionRange(filters.selectedTime)
             let requestedTimeForBackend = filters.useNow ? nil : selectedTargetTime
             isFuturePrediction = selectedTargetTime > Date().addingTimeInterval(15 * 60)
 
@@ -327,6 +409,7 @@ final class SunnySipsViewModel: ObservableObject {
             var effectiveCafes = result.response.cafes
             usingLiveWeather = false
             weatherUpdatedAt = nil
+            weatherTargetAt = nil
             weatherFallbackMessage = nil
             weatherSource = "Snapshot"
             weatherIsForecast = isFuturePrediction
@@ -339,15 +422,25 @@ final class SunnySipsViewModel: ObservableObject {
                 effectiveCafes = result.response.cafes.map { $0.applyingCloudCover(liveWeather.cloudCoverPct) }
                 usingLiveWeather = true
                 weatherUpdatedAt = liveWeather.fetchedAt
+                weatherTargetAt = liveWeather.targetTime
                 weatherSource = liveWeather.source
                 weatherIsForecast = liveWeather.isForecast
+#if DEBUG
+                print("SunnySips weather live source=\(liveWeather.source) cloud=\(Int(liveWeather.cloudCoverPct)) target=\(liveWeather.targetTime) interpolated=\(liveWeather.interpolated)")
+#endif
             } else {
                 weatherFallbackMessage = "Weather unavailable - using snapshot"
+#if DEBUG
+                print("SunnySips weather fallback: using snapshot cloud=\(Int(effectiveCloudCover))")
+#endif
             }
 
             cloudCoverPct = effectiveCloudCover
+            if !isDaylight(at: selectedTargetTime) {
+                effectiveCafes = effectiveCafes.map { $0.applyingNightOverride() }
+            }
             allCafes = effectiveCafes
-            warningMessage = effectiveCloudCover >= 85.0
+            warningMessage = effectiveCloudCover >= EffectiveCondition.heavyCloudOverrideThreshold
                 ? "Heavy clouds - effectively shaded at selected time"
                 : nil
 
@@ -457,14 +550,15 @@ final class SunnySipsViewModel: ObservableObject {
         guard let date else { return "--:--" }
         let formatter = DateFormatter()
         formatter.calendar = Date.copenhagenCalendar
-        formatter.timeZone = TimeZone(identifier: "Europe/Copenhagen")
+        formatter.timeZone = copenhagenTimeZone
         formatter.dateFormat = "HH:mm"
         return formatter.string(from: date)
     }
 
     private func effectiveCondition(for cafe: SunnyCafe) -> EffectiveCondition {
+        let time = selectedTargetTime
+        guard isDaylight(at: time) else { return .shaded }
         let cloud = cafe.cloudCoverPct ?? cloudCoverPct
-        let time = filters.useNow ? Date() : filters.selectedTime
         return cafe.effectiveCondition(at: time, cloudCover: cloud)
     }
 
@@ -493,5 +587,59 @@ final class SunnySipsViewModel: ObservableObject {
         if let data = try? JSONEncoder().encode(ids) {
             defaults.set(data, forKey: favoritesDefaultsKey)
         }
+    }
+
+    private var selectedTargetTime: Date {
+        filters.useNow ? Date() : filters.selectedTime
+    }
+
+    private func clampToPredictionRange(_ date: Date) -> Date {
+        let range = predictionRangeForCurrentArea(reference: Date())
+        let rounded = date.roundedDownToQuarterHour()
+        if rounded < range.lowerBound { return range.lowerBound.roundedDownToQuarterHour() }
+        if rounded > range.upperBound { return range.upperBound.roundedDownToQuarterHour() }
+        return rounded
+    }
+
+    private func predictionRangeForCurrentArea(reference: Date = Date()) -> ClosedRange<Date> {
+        var calendar = Date.copenhagenCalendar
+        calendar.timeZone = copenhagenTimeZone
+
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: reference),
+              let todayWindow = SunlightCalculator.daylightWindow(
+                  on: reference,
+                  coordinate: filters.area.bbox.center,
+                  timeZone: copenhagenTimeZone
+              ),
+              let tomorrowWindow = SunlightCalculator.daylightWindow(
+                  on: tomorrow,
+                  coordinate: filters.area.bbox.center,
+                  timeZone: copenhagenTimeZone
+              )
+        else {
+            return Date.predictionRange24h
+        }
+
+        let lower = min(todayWindow.sunrise, tomorrowWindow.sunrise).roundedDownToQuarterHour()
+        let upper = max(todayWindow.sunrise, tomorrowWindow.sunrise).roundedDownToQuarterHour()
+        if upper <= lower {
+            return Date.predictionRange24h
+        }
+        return lower ... upper
+    }
+
+    private func isDaylight(at date: Date) -> Bool {
+        if let window = SunlightCalculator.daylightWindow(
+            on: date,
+            coordinate: filters.area.bbox.center,
+            timeZone: copenhagenTimeZone
+        ) {
+            return window.contains(date)
+        }
+
+        if let elevation = allCafes.first?.sunElevationDeg {
+            return elevation > 0
+        }
+        return true
     }
 }

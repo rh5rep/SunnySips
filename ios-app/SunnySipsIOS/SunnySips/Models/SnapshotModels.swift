@@ -22,6 +22,8 @@ enum EffectiveCondition: String, Codable, CaseIterable {
     case partial = "Partial"
     case shaded = "Shaded"
 
+    static let heavyCloudOverrideThreshold: Double = 90.0
+
     var color: Color {
         switch self {
         case .sunny: return ThemeColor.sunnyGreen
@@ -112,14 +114,16 @@ struct SunnyCafe: Codable, Identifiable, Hashable {
 
     func sunnyScore(at time: Date, cloudCover: Double) -> Double {
         _ = time // Time is already represented by this snapshot row.
+        guard sunElevationDeg > 0 else { return 0 }
         let clampedCloud = max(0.0, min(100.0, cloudCover))
         let weatherFactor = 1.0 - (clampedCloud / 100.0)
         return max(0.0, min(100.0, (100.0 * sunnyFraction * weatherFactor * 10.0).rounded() / 10.0))
     }
 
     func effectiveCondition(at time: Date, cloudCover: Double) -> EffectiveCondition {
+        guard sunElevationDeg > 0 else { return .shaded }
         let score = sunnyScore(at: time, cloudCover: cloudCover)
-        if cloudCover >= 85.0 { return .shaded }
+        if cloudCover >= EffectiveCondition.heavyCloudOverrideThreshold { return .shaded }
         if score >= 55.0 { return .sunny }
         if score >= 20.0 { return .partial }
         return .shaded
@@ -131,8 +135,7 @@ struct SunnyCafe: Codable, Identifiable, Hashable {
 
     func applyingCloudCover(_ cloudCover: Double) -> SunnyCafe {
         let clampedCloud = max(0.0, min(100.0, cloudCover))
-        let weatherFactor = 1.0 - (clampedCloud / 100.0)
-        let recomputedScore = max(0.0, min(100.0, (100.0 * sunnyFraction * weatherFactor * 10.0).rounded() / 10.0))
+        let recomputedScore = sunnyScore(at: Date(), cloudCover: clampedCloud)
 
         return SunnyCafe(
             osmID: osmID,
@@ -146,6 +149,144 @@ struct SunnyCafe: Codable, Identifiable, Hashable {
             sunAzimuthDeg: sunAzimuthDeg,
             cloudCoverPct: clampedCloud
         )
+    }
+
+    func applyingNightOverride() -> SunnyCafe {
+        SunnyCafe(
+            osmID: osmID,
+            name: name,
+            lon: lon,
+            lat: lat,
+            sunnyScore: 0,
+            sunnyFraction: 0,
+            inShadow: true,
+            sunElevationDeg: sunElevationDeg,
+            sunAzimuthDeg: sunAzimuthDeg,
+            cloudCoverPct: cloudCoverPct
+        )
+    }
+}
+
+struct SunlightWindow: Equatable {
+    let sunrise: Date
+    let sunset: Date
+
+    func contains(_ date: Date) -> Bool {
+        date >= sunrise && date <= sunset
+    }
+}
+
+enum SunlightCalculator {
+    private static let zenith = 90.833
+
+    static func daylightWindow(
+        on date: Date,
+        coordinate: CLLocationCoordinate2D,
+        timeZone: TimeZone = TimeZone(identifier: "Europe/Copenhagen") ?? .current
+    ) -> SunlightWindow? {
+        guard let sunrise = solarEventTime(.sunrise, on: date, coordinate: coordinate, timeZone: timeZone),
+              let sunset = solarEventTime(.sunset, on: date, coordinate: coordinate, timeZone: timeZone)
+        else {
+            return nil
+        }
+        return SunlightWindow(
+            sunrise: min(sunrise, sunset),
+            sunset: max(sunrise, sunset)
+        )
+    }
+
+    private enum SolarEvent {
+        case sunrise
+        case sunset
+    }
+
+    private static func solarEventTime(
+        _ event: SolarEvent,
+        on date: Date,
+        coordinate: CLLocationCoordinate2D,
+        timeZone: TimeZone
+    ) -> Date? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+
+        guard let dayOfYear = calendar.ordinality(of: .day, in: .year, for: date) else {
+            return nil
+        }
+
+        let longitudeHour = coordinate.longitude / 15.0
+        let baseHour = event == .sunrise ? 6.0 : 18.0
+        let t = Double(dayOfYear) + ((baseHour - longitudeHour) / 24.0)
+
+        let meanAnomaly = (0.9856 * t) - 3.289
+        var trueLongitude = meanAnomaly
+        trueLongitude += 1.916 * sin(deg2rad(meanAnomaly))
+        trueLongitude += 0.020 * sin(deg2rad(2 * meanAnomaly))
+        trueLongitude += 282.634
+        trueLongitude = normalizeDegrees(trueLongitude)
+
+        var rightAscension = rad2deg(atan(0.91764 * tan(deg2rad(trueLongitude))))
+        rightAscension = normalizeDegrees(rightAscension)
+
+        let lQuadrant = floor(trueLongitude / 90.0) * 90.0
+        let raQuadrant = floor(rightAscension / 90.0) * 90.0
+        rightAscension += (lQuadrant - raQuadrant)
+        rightAscension /= 15.0
+
+        let sinDeclination = 0.39782 * sin(deg2rad(trueLongitude))
+        let cosDeclination = cos(asin(sinDeclination))
+
+        let cosHourAngle = (
+            cos(deg2rad(zenith)) - (sinDeclination * sin(deg2rad(coordinate.latitude)))
+        ) / (cosDeclination * cos(deg2rad(coordinate.latitude)))
+
+        if cosHourAngle > 1.0 || cosHourAngle < -1.0 {
+            return nil
+        }
+
+        var hourAngle = event == .sunrise
+            ? (360.0 - rad2deg(acos(cosHourAngle)))
+            : rad2deg(acos(cosHourAngle))
+        hourAngle /= 15.0
+
+        let localMeanTime = hourAngle + rightAscension - (0.06571 * t) - 6.622
+        let utcHours = normalizeHours(localMeanTime - longitudeHour)
+        let timeZoneOffsetHours = Double(timeZone.secondsFromGMT(for: date)) / 3600.0
+        var localHours = utcHours + timeZoneOffsetHours
+        var dayOffset = 0
+
+        while localHours < 0 {
+            localHours += 24
+            dayOffset -= 1
+        }
+        while localHours >= 24 {
+            localHours -= 24
+            dayOffset += 1
+        }
+
+        guard let adjustedDay = calendar.date(byAdding: .day, value: dayOffset, to: calendar.startOfDay(for: date)) else {
+            return nil
+        }
+        return adjustedDay.addingTimeInterval(localHours * 3600.0)
+    }
+
+    private static func normalizeDegrees(_ value: Double) -> Double {
+        var result = value.truncatingRemainder(dividingBy: 360.0)
+        if result < 0 { result += 360.0 }
+        return result
+    }
+
+    private static func normalizeHours(_ value: Double) -> Double {
+        var result = value.truncatingRemainder(dividingBy: 24.0)
+        if result < 0 { result += 24.0 }
+        return result
+    }
+
+    private static func deg2rad(_ degrees: Double) -> Double {
+        degrees * .pi / 180.0
+    }
+
+    private static func rad2deg(_ radians: Double) -> Double {
+        radians * 180.0 / .pi
     }
 }
 

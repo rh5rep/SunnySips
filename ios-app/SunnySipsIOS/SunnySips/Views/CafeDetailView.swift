@@ -60,6 +60,13 @@ struct CafeDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
+                    if isNightAtSelectedTime {
+                        Text("No direct sun possible (night).")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(ThemeColor.shadedRed)
+                            .accessibilityLabel("No direct sun possible at night")
+                    }
+
                     VStack(alignment: .leading, spacing: 8) {
                         detailRow("Cloud", value: "\(Int(cafe.cloudCoverPct ?? 0))%")
                         detailRow("Sun elevation", value: String(format: "%.1f°", cafe.sunElevationDeg))
@@ -124,6 +131,10 @@ struct CafeDetailView: View {
 
     private var condition: EffectiveCondition {
         cafe.effectiveCondition(at: Date(), cloudCover: cafe.cloudCoverPct ?? 50.0)
+    }
+
+    private var isNightAtSelectedTime: Bool {
+        cafe.sunElevationDeg <= 0
     }
 
     private func detailRow(_ title: String, value: String) -> some View {

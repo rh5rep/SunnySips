@@ -9,6 +9,7 @@ struct CafeMapView: UIViewRepresentable {
     let locateRequestID: Int
     let use3DMap: Bool
     let effectiveCloudCover: Double
+    let showCloudOverlay: Bool
     let warningMessage: String?
     var onRegionChanged: (MKCoordinateRegion) -> Void
     var onSelectCafe: (SunnyCafe) -> Void
@@ -32,6 +33,7 @@ struct CafeMapView: UIViewRepresentable {
         mapView.isPitchEnabled = use3DMap
         mapView.setRegion(region, animated: false)
         context.coordinator.applyAnnotations(to: mapView, cafes: cafes)
+        context.coordinator.updateCloudOverlay(on: mapView)
         return mapView
     }
 
@@ -50,6 +52,7 @@ struct CafeMapView: UIViewRepresentable {
             mapView.isPitchEnabled = use3DMap
         }
         applyBaseMapStyle(to: mapView)
+        context.coordinator.updateCloudOverlay(on: mapView)
 
         if !mapView.region.approximatelyEquals(region) {
             context.coordinator.isProgrammaticRegionChange = true
@@ -70,6 +73,8 @@ struct CafeMapView: UIViewRepresentable {
         var isProgrammaticRegionChange = false
         var lastLocateRequestID: Int = -1
         var last3DState = false
+        var cloudOverlay: MKPolygon?
+        var cloudOverlayRenderer: MKPolygonRenderer?
 
         private let locationManager = CLLocationManager()
         private var lastLocationRequestAt: Date?
@@ -227,7 +232,21 @@ struct CafeMapView: UIViewRepresentable {
             }
         }
 
+        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            guard let polygon = overlay as? MKPolygon else {
+                return MKOverlayRenderer(overlay: overlay)
+            }
+            let renderer = MKPolygonRenderer(polygon: polygon)
+            renderer.strokeColor = .clear
+            renderer.lineWidth = 0
+            renderer.fillColor = cloudOverlayFillColor(in: mapView)
+            cloudOverlayRenderer = renderer
+            return renderer
+        }
+
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            updateCloudOverlay(on: mapView)
+
             let region = mapView.region
             let wasProgrammatic = isProgrammaticRegionChange
             isProgrammaticRegionChange = false
@@ -240,6 +259,51 @@ struct CafeMapView: UIViewRepresentable {
             if wasProgrammatic {
                 return
             }
+        }
+
+        func updateCloudOverlay(on mapView: MKMapView) {
+            let shouldShow = parent.showCloudOverlay
+            guard shouldShow else {
+                removeCloudOverlay(from: mapView)
+                return
+            }
+
+            if cloudOverlay == nil {
+                let polygon = worldBoundsPolygon()
+                cloudOverlay = polygon
+                mapView.addOverlay(polygon, level: .aboveRoads)
+            }
+
+            if let renderer = cloudOverlayRenderer {
+                renderer.fillColor = cloudOverlayFillColor(in: mapView)
+                renderer.setNeedsDisplay()
+            }
+        }
+
+        private func removeCloudOverlay(from mapView: MKMapView) {
+            if let overlay = cloudOverlay {
+                mapView.removeOverlay(overlay)
+            }
+            cloudOverlay = nil
+            cloudOverlayRenderer = nil
+        }
+
+        private func cloudOverlayFillColor(in mapView: MKMapView) -> UIColor {
+            let alpha = max(0.0, min((parent.effectiveCloudCover / 100.0) * 0.6, 0.4))
+            let isDarkMode = mapView.traitCollection.userInterfaceStyle == .dark
+            let base = isDarkMode ? UIColor(white: 0.08, alpha: 1.0) : UIColor(white: 0.55, alpha: 1.0)
+            return base.withAlphaComponent(alpha)
+        }
+
+        private func worldBoundsPolygon() -> MKPolygon {
+            // Keep it slightly inside the poles to avoid projection artifacts.
+            var coordinates = [
+                CLLocationCoordinate2D(latitude: 85.0, longitude: -180.0),
+                CLLocationCoordinate2D(latitude: 85.0, longitude: 180.0),
+                CLLocationCoordinate2D(latitude: -85.0, longitude: 180.0),
+                CLLocationCoordinate2D(latitude: -85.0, longitude: -180.0),
+            ]
+            return MKPolygon(coordinates: &coordinates, count: coordinates.count)
         }
     }
 }
@@ -340,12 +404,45 @@ final class CafePointAnnotation: NSObject, MKAnnotation {
 final class CafeAnnotationView: MKAnnotationView {
     static let reuseIdentifier = "CafeAnnotationView"
 
+    private let bubbleView = UIView()
+    private let symbolView = UIImageView()
+
     override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
         clusteringIdentifier = "sunny-cafe"
         collisionMode = .circle
         displayPriority = .defaultHigh
         canShowCallout = false
+
+        frame = CGRect(x: 0, y: 0, width: 26, height: 26)
+        bounds = frame
+        centerOffset = CGPoint(x: 0, y: 0)
+
+        bubbleView.translatesAutoresizingMaskIntoConstraints = false
+        bubbleView.layer.cornerRadius = 13
+        bubbleView.layer.masksToBounds = false
+        addSubview(bubbleView)
+
+        symbolView.translatesAutoresizingMaskIntoConstraints = false
+        symbolView.image = UIImage(
+            systemName: "cup.and.saucer.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
+        )?.withRenderingMode(.alwaysTemplate)
+        symbolView.tintColor = .white
+        symbolView.contentMode = .scaleAspectFit
+        bubbleView.addSubview(symbolView)
+
+        NSLayoutConstraint.activate([
+            bubbleView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            bubbleView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            bubbleView.widthAnchor.constraint(equalToConstant: 26),
+            bubbleView.heightAnchor.constraint(equalToConstant: 26),
+
+            symbolView.centerXAnchor.constraint(equalTo: bubbleView.centerXAnchor),
+            symbolView.centerYAnchor.constraint(equalTo: bubbleView.centerYAnchor),
+            symbolView.widthAnchor.constraint(equalToConstant: 16),
+            symbolView.heightAnchor.constraint(equalToConstant: 16),
+        ])
     }
 
     required init?(coder: NSCoder) {
@@ -353,21 +450,16 @@ final class CafeAnnotationView: MKAnnotationView {
     }
 
     func apply(cafe: SunnyCafe, condition: EffectiveCondition, isDimmed: Bool) {
-        let radius: CGFloat
-        switch condition {
-        case .sunny: radius = 7
-        case .partial: radius = 6
-        case .shaded: radius = 5
-        }
+        bubbleView.backgroundColor = UIColor(condition.color)
+        bubbleView.layer.cornerRadius = 13
+        bubbleView.layer.borderWidth = 1.1
+        bubbleView.layer.borderColor = UIColor.white.withAlphaComponent(0.32).cgColor
+        bubbleView.layer.shadowColor = UIColor.black.cgColor
+        bubbleView.layer.shadowOpacity = isSelected ? 0.26 : 0.18
+        bubbleView.layer.shadowRadius = isSelected ? 3 : 2
+        bubbleView.layer.shadowOffset = CGSize(width: 0, height: 1)
 
-        frame = CGRect(x: 0, y: 0, width: radius * 2, height: radius * 2)
-        layer.cornerRadius = radius
-        layer.backgroundColor = UIColor(condition.color).cgColor
         alpha = isSelected ? 1.0 : (isDimmed ? 0.58 : 0.92)
-        layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.15
-        layer.shadowRadius = 2
-        layer.shadowOffset = CGSize(width: 0, height: 1)
 
         isAccessibilityElement = true
         accessibilityLabel = "\(cafe.name), \(condition.rawValue) adjusted for weather, score \(Int(cafe.sunnyScore))"

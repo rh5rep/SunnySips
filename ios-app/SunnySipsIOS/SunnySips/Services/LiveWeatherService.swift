@@ -12,6 +12,7 @@ struct LiveWeatherReading {
     let source: String
     let isForecast: Bool
     let targetTime: Date
+    let interpolated: Bool
 }
 
 private struct OpenMeteoResponse: Decodable {
@@ -103,16 +104,15 @@ actor LiveWeatherService {
         }
         guard !parsed.isEmpty else { throw LiveWeatherError.noData }
 
-        let nearest = parsed.min {
-            abs($0.0.timeIntervalSince(date)) < abs($1.0.timeIntervalSince(date))
-        } ?? parsed[0]
+        let resolved = resolveCloudCover(for: date, series: parsed)
 
         return LiveWeatherReading(
-            cloudCoverPct: nearest.1,
+            cloudCoverPct: resolved.cloudCoverPct,
             fetchedAt: Date(),
             source: "Open-Meteo",
             isForecast: date > Date().addingTimeInterval(15 * 60),
-            targetTime: nearest.0
+            targetTime: resolved.targetTime,
+            interpolated: resolved.interpolated
         )
     }
 
@@ -146,16 +146,15 @@ actor LiveWeatherService {
         }
         guard !candidates.isEmpty else { throw LiveWeatherError.noData }
 
-        let nearest = candidates.min {
-            abs($0.0.timeIntervalSince(date)) < abs($1.0.timeIntervalSince(date))
-        } ?? candidates[0]
+        let resolved = resolveCloudCover(for: date, series: candidates)
 
         return LiveWeatherReading(
-            cloudCoverPct: nearest.1,
+            cloudCoverPct: resolved.cloudCoverPct,
             fetchedAt: Date(),
             source: "MET Norway",
             isForecast: date > Date().addingTimeInterval(15 * 60),
-            targetTime: nearest.0
+            targetTime: resolved.targetTime,
+            interpolated: resolved.interpolated
         )
     }
 
@@ -200,5 +199,41 @@ actor LiveWeatherService {
         }
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         return formatter.date(from: raw)
+    }
+
+    private func resolveCloudCover(for target: Date, series: [(Date, Double)]) -> (cloudCoverPct: Double, targetTime: Date, interpolated: Bool) {
+        let sorted = series.sorted { $0.0 < $1.0 }
+        guard let first = sorted.first else {
+            return (50.0, target, false)
+        }
+        guard let last = sorted.last else {
+            return (first.1, first.0, false)
+        }
+
+        if target <= first.0 {
+            return (first.1, first.0, false)
+        }
+        if target >= last.0 {
+            return (last.1, last.0, false)
+        }
+
+        for i in 0 ..< (sorted.count - 1) {
+            let lower = sorted[i]
+            let upper = sorted[i + 1]
+            if target == lower.0 { return (lower.1, lower.0, false) }
+            if target == upper.0 { return (upper.1, upper.0, false) }
+
+            if target > lower.0 && target < upper.0 {
+                let span = upper.0.timeIntervalSince(lower.0)
+                guard span > 0 else {
+                    return (lower.1, lower.0, false)
+                }
+                let weight = max(0.0, min(1.0, target.timeIntervalSince(lower.0) / span))
+                let cloud = lower.1 + ((upper.1 - lower.1) * weight)
+                return (max(0.0, min(100.0, cloud)), target, true)
+            }
+        }
+
+        return (first.1, first.0, false)
     }
 }

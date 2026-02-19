@@ -38,9 +38,21 @@ struct FiltersSheetView: View {
                             Text("Now through +24 hours (15-minute steps)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    jumpButton("Now +1h", minutes: 60)
+                                    jumpButton("+3h", minutes: 180)
+                                    jumpButton("+6h", minutes: 360)
+                                    jumpButton("+12h", minutes: 720)
+                                    jumpButton("+24h", minutes: 1440)
+                                }
+                                .padding(.vertical, 2)
+                            }
+
                             QuarterHourDatePicker(
                                 selection: selectedTimeBinding,
-                                range: Date.predictionRange24h
+                                range: viewModel.predictionRange
                             )
                             .frame(height: 190)
                         }
@@ -186,5 +198,17 @@ struct FiltersSheetView: View {
         case .partial: return ThemeColor.partialAmber
         case .shaded: return ThemeColor.shadedRed
         }
+    }
+
+    private func jumpButton(_ title: String, minutes: Int) -> some View {
+        Button(title) {
+            withAnimation(.spring(duration: 0.2)) {
+                viewModel.jumpForward(minutes: minutes)
+            }
+        }
+        .buttonStyle(.bordered)
+        .font(.caption.weight(.semibold))
+        .disabled(!viewModel.canJumpForward(minutes: minutes))
+        .accessibilityLabel("Jump forward \(minutes >= 60 ? "\(minutes / 60) hours" : "\(minutes) minutes")")
     }
 }

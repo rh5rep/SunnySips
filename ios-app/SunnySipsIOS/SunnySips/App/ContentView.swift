@@ -5,6 +5,7 @@ private enum ActiveSheet: Identifiable {
     case list
     case filters
     case favorites
+    case forecastTime
     case detail(SunnyCafe)
 
     var id: String {
@@ -12,6 +13,7 @@ private enum ActiveSheet: Identifiable {
         case .list: return "list"
         case .filters: return "filters"
         case .favorites: return "favorites"
+        case .forecastTime: return "forecast-time"
         case .detail(let cafe): return "detail-\(cafe.id)"
         }
     }
@@ -27,10 +29,6 @@ struct ContentView: View {
     @State private var listDetent: PresentationDetent = .fraction(0.25)
     @State private var activeSheet: ActiveSheet?
 
-    private var selectedTheme: AppTheme {
-        AppTheme(rawValue: themeRawValue) ?? .system
-    }
-
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
@@ -41,6 +39,7 @@ struct ContentView: View {
                     locateRequestID: viewModel.locateUserRequestID,
                     use3DMap: viewModel.use3DMap,
                     effectiveCloudCover: viewModel.cloudCoverPct,
+                    showCloudOverlay: viewModel.showCloudOverlay,
                     warningMessage: viewModel.warningMessage,
                     onRegionChanged: { viewModel.mapRegionChanged($0) },
                     onSelectCafe: { viewModel.selectCafeFromMap($0) },
@@ -97,17 +96,7 @@ struct ContentView: View {
                         Image(systemName: "heart")
                             .imageScale(.medium)
                     }
-                    .contextMenu {
-                        ForEach(AppTheme.allCases) { theme in
-                            Button {
-                                themeRawValue = theme.rawValue
-                            } label: {
-                                Label(theme.title, systemImage: theme.rawValue == themeRawValue ? "checkmark" : "paintpalette")
-                            }
-                        }
-                    }
                     .accessibilityLabel("Open favorites")
-                    .accessibilityHint("Long press for theme options")
 
                     Button {
                         presentList()
@@ -116,6 +105,20 @@ struct ContentView: View {
                             .imageScale(.medium)
                     }
                     .accessibilityLabel("Open cafe list")
+
+                    Menu {
+                        ForEach(AppTheme.allCases) { theme in
+                            Button {
+                                themeRawValue = theme.rawValue
+                            } label: {
+                                Label(theme.title, systemImage: theme.rawValue == themeRawValue ? "checkmark" : "circle")
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "paintpalette")
+                            .imageScale(.medium)
+                    }
+                    .accessibilityLabel("Choose app appearance")
                 }
             }
             .task {
@@ -178,6 +181,11 @@ struct ContentView: View {
                     .presentationDetents([.fraction(0.25), .medium, .large])
                     .presentationDragIndicator(.visible)
                     .presentationBackground(ThemeColor.surface)
+                case .forecastTime:
+                    ForecastTimeSheetView(viewModel: viewModel)
+                        .presentationDetents([.fraction(0.55)])
+                        .presentationDragIndicator(.visible)
+                        .presentationBackground(.ultraThinMaterial)
                 case .detail(let cafe):
                     CafeDetailView(
                         cafe: cafe,
@@ -220,7 +228,7 @@ struct ContentView: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(ThemeColor.ink)
 
-                    Text("\(viewModel.cafes.count) cafes • \(viewModel.updatedRelativeText)")
+                    Text("\(viewModel.cafes.count) cafes • \(viewModel.snapshotFreshnessText)")
                         .font(.caption)
                         .foregroundStyle(ThemeColor.muted)
                 }
@@ -247,6 +255,37 @@ struct ContentView: View {
                 bucketChip(bucket: .shaded, label: "\(viewModel.stats.shaded)", icon: "cloud.fill", color: ThemeColor.shadedRed)
             }
 
+            HStack(spacing: 8) {
+                Text(skyCoveragePillText)
+                    .timePillStyle(skyCoveragePillTone, size: .small)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                Label(
+                    viewModel.weatherPillText,
+                    systemImage: viewModel.weatherPillSymbol
+                )
+                .timePillStyle(.muted, size: .small)
+                .lineLimit(1)
+                .layoutPriority(0)
+
+                Spacer(minLength: 6)
+
+                Button {
+                    withAnimation(.spring(duration: 0.25)) {
+                        viewModel.togglePredictFutureMode()
+                    }
+                } label: {
+                    Label(
+                        viewModel.filters.useNow ? "Forecast" : "Now",
+                        systemImage: viewModel.filters.useNow ? "clock.badge.plus" : "arrow.left"
+                    )
+                    .timePillStyle(viewModel.filters.useNow ? .primary : .secondary, size: .small)
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(viewModel.filters.useNow ? "Switch to forecast mode" : "Back to current time")
+            }
+
             if let warning = viewModel.warningMessage {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -261,51 +300,53 @@ struct ContentView: View {
                 .background(ThemeColor.surfaceSoft.opacity(0.92), in: Capsule())
             }
 
-            HStack {
-                Spacer()
-
-                Button {
-                    viewModel.togglePredictFutureMode()
-                } label: {
-                    Text(viewModel.filters.useNow ? "Predict Future" : "Back to Now")
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(ThemeColor.sun.opacity(0.25), in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(viewModel.filters.useNow ? "Switch to future prediction mode" : "Switch back to now")
-            }
-
             if !viewModel.filters.useNow {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(futureLabel(viewModel.filters.selectedTime))
-                        Spacer()
-                        Text("+\(Int(viewModel.futureHourOffset))h")
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(ThemeColor.muted)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Button {
+                            presentForecastTimePicker()
+                        } label: {
+                            Text("Forecast \(viewModel.selectedForecastShortTimeText)")
+                                .timePillStyle(.primary, size: .small)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Forecast time selector. Current \(viewModel.selectedForecastTimeText)")
 
-                    Slider(
-                        value: Binding(
-                            get: { viewModel.futureHourOffset },
-                            set: { viewModel.setFutureHourOffset($0) }
-                        ),
-                        in: 0 ... 24,
-                        step: 1
-                    )
-                    .tint(ThemeColor.focusBlue)
-                    .accessibilityLabel("Prediction timeline")
-                    .accessibilityHint("Jump forecast time in one hour steps")
+                        Spacer(minLength: 0)
+
+                        if let night = viewModel.nightBannerText {
+                            Label("Night", systemImage: "moon.stars.fill")
+                                .timePillStyle(.muted, size: .small)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .accessibilityLabel(night)
+                        }
+                    }
+
+                    if viewModel.nightBannerText == nil {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(viewModel.quickJumpMinutes, id: \.self) { minutes in
+                                    quickJumpChip(minutes: minutes)
+                                }
+                            }
+                            .padding(.vertical, 1)
+                        }
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        .animation(.easeInOut(duration: 0.2), value: viewModel.filters.useNow)
         .padding(12)
-        .background(headerBackground)
+        .background(
+            headerBackground,
+            in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+        )
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(ThemeColor.line.opacity(0.5), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(ThemeColor.line.opacity(0.35), lineWidth: 1)
         )
     }
 
@@ -339,6 +380,46 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibility)
+    }
+
+    private func quickJumpChip(minutes: Int) -> some View {
+        let enabled = viewModel.canJumpForward(minutes: minutes)
+        return Button {
+            withAnimation(.spring(duration: 0.22)) {
+                viewModel.jumpForward(minutes: minutes)
+            }
+        } label: {
+            Text(jumpLabel(minutes: minutes))
+                .timePillStyle(.primary, size: .small, isDisabled: !enabled)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel("Jump forward \(minutes >= 60 ? "\(minutes / 60) hours" : "\(minutes) minutes")")
+    }
+
+    private func jumpLabel(minutes: Int) -> String {
+        if minutes < 60 { return "+\(minutes)m" }
+        return "+\(minutes / 60)h"
+    }
+
+    private var cloudPercentRounded: Int {
+        max(0, min(100, Int(viewModel.cloudCoverPct.rounded())))
+    }
+
+    private var sunnyPercentRounded: Int {
+        max(0, min(100, 100 - cloudPercentRounded))
+    }
+
+    private var skyCoveragePillText: String {
+        if sunnyPercentRounded >= cloudPercentRounded {
+            return "☀️ Sunny \(sunnyPercentRounded)%"
+        }
+        return "☁️ Cloud \(cloudPercentRounded)%"
+    }
+
+    private var skyCoveragePillTone: TimePillTone {
+        sunnyPercentRounded >= cloudPercentRounded ? .sunny : .secondary
     }
 
     private var headerBackground: some ShapeStyle {
@@ -426,6 +507,7 @@ struct ContentView: View {
                 locateRequestID: viewModel.locateUserRequestID,
                 use3DMap: viewModel.use3DMap,
                 effectiveCloudCover: viewModel.cloudCoverPct,
+                showCloudOverlay: viewModel.showCloudOverlay,
                 warningMessage: viewModel.warningMessage,
                 onRegionChanged: { viewModel.mapRegionChanged($0) },
                 onSelectCafe: { viewModel.selectCafeFromMap($0) },
@@ -471,6 +553,11 @@ struct ContentView: View {
         activeSheet = .filters
     }
 
+    private func presentForecastTimePicker() {
+        viewModel.selectedCafe = nil
+        activeSheet = .forecastTime
+    }
+
     private func presentList() {
         viewModel.selectedCafe = nil
         activeSheet = .list
@@ -489,11 +576,4 @@ struct ContentView: View {
         }
     }
 
-    private func futureLabel(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = Date.copenhagenCalendar
-        formatter.timeZone = TimeZone(identifier: "Europe/Copenhagen")
-        formatter.dateFormat = "EEE HH:mm"
-        return formatter.string(from: date)
-    }
 }
