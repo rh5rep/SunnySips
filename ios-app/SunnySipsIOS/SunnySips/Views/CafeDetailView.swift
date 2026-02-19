@@ -24,73 +24,77 @@ struct CafeDetailView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    heroSection
+            ZStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        heroSection
+                        heroActionRow
 
+                        insightsSection
+                        technicalSection
+                        osmSection
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 18)
+                }
+                .navigationTitle("Cafe Details")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Close") {
+                            dismiss()
+                        }
+                        .accessibilityLabel("Close details")
+                    }
+                }
+                .popover(isPresented: $showGeometryHelp, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
+                    Text("Direct sun (geometry) means potential sun exposure if skies were fully clear.")
+                        .font(.footnote)
+                        .foregroundStyle(ThemeColor.ink)
+                        .padding(12)
+                        .frame(width: 250, alignment: .leading)
+                        .background(ThemeColor.surface)
+                }
+                .task(id: cafe.id) {
+                    await loadLookAround()
+                    await loadMapSnapshot()
+                    await loadPlacesDetails()
                     if shouldShowSunnyWin {
-                        Label("Great sunny pick right now", systemImage: "sparkles")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(ThemeColor.sunnyGreen)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 9)
-                            .background(ThemeColor.sunnyGreen.opacity(0.14), in: Capsule())
-                            .transition(.opacity.combined(with: .scale))
-                    }
-
-                    insightsSection
-                    technicalSection
-                    osmSection
-                    navigationActions
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 18)
-            }
-            .navigationTitle("Cafe Details")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Close") {
-                        dismiss()
-                    }
-                    .accessibilityLabel("Close details")
-                }
-            }
-            .confirmationDialog("Open navigation in", isPresented: $showNavigateOptions, titleVisibility: .visible) {
-                Button("Apple Maps") { openAppleMaps() }
-                Button("Google Maps") { openGoogleMaps() }
-                Button("Street View") { openStreetView() }
-                Button("Cancel", role: .cancel) {}
-            }
-            .popover(isPresented: $showGeometryHelp, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
-                Text("Direct sun (geometry) means potential sun exposure if skies were fully clear.")
-                    .font(.footnote)
-                    .foregroundStyle(ThemeColor.ink)
-                    .padding(12)
-                    .frame(width: 250, alignment: .leading)
-                    .background(ThemeColor.surface)
-            }
-            .task(id: cafe.id) {
-                await loadLookAround()
-                await loadMapSnapshot()
-                await loadPlacesDetails()
-                if shouldShowSunnyWin {
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) {
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) {
+                            animateScorePill = true
+                        }
+                    } else {
                         animateScorePill = true
                     }
-                } else {
-                    animateScorePill = true
+                }
+
+                if showNavigateOptions {
+                    Color.black.opacity(0.42)
+                        .ignoresSafeArea()
+                        .transition(.opacity)
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                showNavigateOptions = false
+                            }
+                        }
+                }
+
+                if showNavigateOptions {
+                    themedNavigationSheet
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .zIndex(10)
                 }
             }
+            .animation(.easeInOut(duration: 0.2), value: showNavigateOptions)
         }
     }
 
     private var heroSection: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack(alignment: .topTrailing) {
             heroMedia
                 .overlay(
                     LinearGradient(
-                        colors: [.clear, Color.black.opacity(0.42)],
+                        colors: [Color.black.opacity(0.12), Color.black.opacity(0.58)],
                         startPoint: .center,
                         endPoint: .bottom
                     )
@@ -124,22 +128,37 @@ struct CafeDetailView: View {
                             .foregroundStyle(.white.opacity(0.95))
                             .lineLimit(1)
                     }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.black.opacity(0.44), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                     Spacer(minLength: 8)
 
-                    Button {
-                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                            isFavorite.toggle()
+                    HStack(spacing: 8) {
+                        Button {
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                isFavorite.toggle()
+                            }
+                        } label: {
+                            Image(systemName: isFavorite ? "heart.fill" : "heart")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(isFavorite ? ThemeColor.sunBright : .white)
+                                .frame(width: 38, height: 38)
+                                .background(.ultraThinMaterial, in: Circle())
                         }
-                    } label: {
-                        Image(systemName: isFavorite ? "heart.fill" : "heart")
-                            .font(.headline.weight(.semibold))
-                            .foregroundStyle(isFavorite ? ThemeColor.sunBright : .white)
-                            .frame(width: 38, height: 38)
-                            .background(.ultraThinMaterial, in: Circle())
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(isFavorite ? "Remove from favorites" : "Add to favorites")
+
+                        ShareLink(item: shareURL, preview: SharePreview(cafe.name)) {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 38, height: 38)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Share cafe")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(isFavorite ? "Remove from favorites" : "Add to favorites")
                 }
                 .padding(12)
             }
@@ -150,6 +169,41 @@ struct CafeDetailView: View {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(.white.opacity(0.12), lineWidth: 1)
         )
+    }
+
+    private var heroActionRow: some View {
+        HStack(spacing: 10) {
+            Label(
+                pickTypeText,
+                systemImage: pickTypeSymbol
+            )
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(condition.color, in: Capsule())
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    showNavigateOptions = true
+                }
+            } label: {
+                Label("Navigate", systemImage: "location.fill")
+                    .font(.subheadline.weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.9)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(ThemeColor.focusBlue, in: Capsule())
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Navigate to cafe")
+        }
     }
 
     private var insightsSection: some View {
@@ -291,32 +345,77 @@ struct CafeDetailView: View {
         .background(ThemeColor.surfaceSoft.opacity(0.72), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    private var navigationActions: some View {
-        HStack(spacing: 10) {
-            Button {
-                showNavigateOptions = true
-            } label: {
-                Label("Navigate", systemImage: "location.fill")
-                    .font(.subheadline.weight(.bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.9)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.white)
-            .background(ThemeColor.focusBlue, in: Capsule())
-            .accessibilityLabel("Navigate to cafe")
+    private var themedNavigationSheet: some View {
+        VStack {
+            Spacer()
+            VStack(spacing: 10) {
+                Capsule()
+                    .fill(ThemeColor.line.opacity(0.9))
+                    .frame(width: 36, height: 5)
+                    .padding(.top, 8)
 
-            ShareLink(item: shareURL, preview: SharePreview(cafe.name)) {
-                Image(systemName: "square.and.arrow.up")
+                Text("Navigate With")
                     .font(.headline.weight(.semibold))
-                    .frame(width: 44, height: 44)
-                    .background(ThemeColor.surfaceSoft, in: Circle())
+                    .foregroundStyle(ThemeColor.ink)
+
+                VStack(spacing: 8) {
+                    navigationOptionButton("Apple Maps", systemImage: "map.fill", action: openAppleMaps)
+                    navigationOptionButton("Google Maps", systemImage: "globe", action: openGoogleMaps)
+                    navigationOptionButton("Street View", systemImage: "figure.walk", action: openStreetView)
+                }
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        showNavigateOptions = false
+                    }
+                } label: {
+                    Text("Cancel")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(ThemeColor.muted)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(ThemeColor.surfaceSoft, in: Capsule())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Share cafe")
+            .padding(14)
+            .background(
+                ThemeColor.surface.opacity(0.98),
+                in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(ThemeColor.line.opacity(0.7), lineWidth: 1)
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
         }
+        .ignoresSafeArea(edges: .bottom)
+    }
+
+    private func navigationOptionButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                showNavigateOptions = false
+            }
+            action()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.subheadline.weight(.semibold))
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(ThemeColor.muted)
+            }
+            .foregroundStyle(ThemeColor.ink)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(ThemeColor.surfaceSoft.opacity(0.88), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -356,7 +455,7 @@ struct CafeDetailView: View {
             .minimumScaleFactor(0.9)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
-            .background(ThemeColor.sun, in: Capsule())
+            .background(condition.color, in: Capsule())
             .scaleEffect(animateScorePill ? 1.0 : 0.92)
             .accessibilityLabel("Score \(scoreOutOf100) out of 100")
     }
@@ -439,6 +538,22 @@ struct CafeDetailView: View {
 
     private var shouldShowSunnyWin: Bool {
         condition == .sunny && cloudCover < 20.0
+    }
+
+    private var pickTypeText: String {
+        switch condition {
+        case .sunny: return "Great Pick"
+        case .partial: return "Some Sun"
+        case .shaded: return "No Sun"
+        }
+    }
+
+    private var pickTypeSymbol: String {
+        switch condition {
+        case .sunny: return "sparkles"
+        case .partial: return "cloud.sun.fill"
+        case .shaded: return "cloud.fill"
+        }
     }
 
     private var scoreOutOf100: Int {
