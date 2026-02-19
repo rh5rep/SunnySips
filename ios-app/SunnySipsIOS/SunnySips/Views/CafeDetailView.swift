@@ -14,98 +14,37 @@ struct CafeDetailView: View {
     @State private var placesDetails: CafeExternalDetails?
     @State private var placesErrorText: String?
     @State private var isLoadingPlaces = false
+    @State private var showNavigateOptions = false
+    @State private var showOSMDetails = false
+    @State private var showTechnicalDetails = false
+    @State private var animateScorePill = false
+    @State private var showGeometryHelp = false
 
     private let placesService = OverpassService()
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    lookAroundHeader
+                VStack(alignment: .leading, spacing: 16) {
+                    heroSection
 
-                    HStack(alignment: .top) {
-                        Text(cafe.name)
-                            .font(.title2.weight(.bold))
-                            .foregroundStyle(.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                        Button {
-                            isFavorite.toggle()
-                        } label: {
-                            Image(systemName: isFavorite ? "heart.fill" : "heart")
-                                .font(.title3.weight(.semibold))
-                                .foregroundStyle(isFavorite ? ThemeColor.accentGold : .secondary)
-                                .padding(8)
-                                .background(Color(.secondarySystemBackground), in: Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(isFavorite ? "Remove favorite" : "Add favorite")
+                    if shouldShowSunnyWin {
+                        Label("Great sunny pick right now", systemImage: "sparkles")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ThemeColor.sunnyGreen)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 9)
+                            .background(ThemeColor.sunnyGreen.opacity(0.14), in: Capsule())
+                            .transition(.opacity.combined(with: .scale))
                     }
 
-                    HStack(spacing: 10) {
-                        metricPill("Score \(Int(cafe.sunnyScore.rounded()))/100", color: markerColor)
-                        metricPill("Direct sun \(cafe.sunnyPercentString) (geometry)", color: markerColor)
-                    }
-                    HStack(spacing: 8) {
-                        Text("\(condition.emoji) \(condition.rawValue)")
-                            .font(.headline.weight(.semibold))
-                            .foregroundStyle(condition.color)
-                        Image(systemName: "questionmark.circle")
-                            .foregroundStyle(.secondary)
-                            .help("Condition uses sun + cloud forecast.")
-                    }
-                    .accessibilityLabel("\(condition.rawValue) condition")
-
-                    Text("Score = direct sun x weather factor")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if isNightAtSelectedTime {
-                        Text("No direct sun possible (night).")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(ThemeColor.shadedRed)
-                            .accessibilityLabel("No direct sun possible at night")
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        detailRow("Cloud", value: "\(Int(cafe.cloudCoverPct ?? 0))%")
-                        detailRow("Sun elevation", value: String(format: "%.1f°", cafe.sunElevationDeg))
-                        detailRow("Sun azimuth", value: String(format: "%.1f°", cafe.sunAzimuthDeg))
-                        detailRow("Coordinates", value: String(format: "%.5f, %.5f", cafe.lat, cafe.lon))
-                    }
-                    .font(.subheadline)
-
-                    placesSection
-
-                    VStack(spacing: 10) {
-                        HStack(spacing: 12) {
-                            Button {
-                                openAppleMaps()
-                            } label: {
-                                Label("Open in Maps", systemImage: "map")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.borderedProminent)
-
-                            Button {
-                                openGoogleMaps()
-                            } label: {
-                                Label("Google Maps", systemImage: "location.viewfinder")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                        }
-
-                        Button {
-                            openStreetView()
-                        } label: {
-                            Label("Street View", systemImage: "figure.walk.motion")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                    }
+                    insightsSection
+                    technicalSection
+                    osmSection
+                    navigationActions
                 }
-                .padding(20)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 18)
             }
             .navigationTitle("Cafe Details")
             .navigationBarTitleDisplayMode(.inline)
@@ -117,159 +56,417 @@ struct CafeDetailView: View {
                     .accessibilityLabel("Close details")
                 }
             }
+            .confirmationDialog("Open navigation in", isPresented: $showNavigateOptions, titleVisibility: .visible) {
+                Button("Apple Maps") { openAppleMaps() }
+                Button("Google Maps") { openGoogleMaps() }
+                Button("Street View") { openStreetView() }
+                Button("Cancel", role: .cancel) {}
+            }
+            .popover(isPresented: $showGeometryHelp, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
+                Text("Direct sun (geometry) means potential sun exposure if skies were fully clear.")
+                    .font(.footnote)
+                    .foregroundStyle(ThemeColor.ink)
+                    .padding(12)
+                    .frame(width: 250, alignment: .leading)
+                    .background(ThemeColor.surface)
+            }
             .task(id: cafe.id) {
                 await loadLookAround()
                 await loadMapSnapshot()
                 await loadPlacesDetails()
-            }
-        }
-    }
-
-    private var markerColor: Color {
-        condition.color
-    }
-
-    private var condition: EffectiveCondition {
-        cafe.effectiveCondition(at: Date(), cloudCover: cafe.cloudCoverPct ?? 50.0)
-    }
-
-    private var isNightAtSelectedTime: Bool {
-        cafe.sunElevationDeg <= 0
-    }
-
-    private func detailRow(_ title: String, value: String) -> some View {
-        HStack {
-            Text(title)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .foregroundStyle(.primary)
-        }
-    }
-
-    private func metricPill(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(color.opacity(0.18), in: Capsule())
-    }
-
-    @ViewBuilder
-    private var placesSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Extra details")
-                    .font(.headline)
-                Spacer()
-                if isLoadingPlaces {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-
-            if let placesDetails {
-                if let address = placesDetails.formattedAddress {
-                    detailRow("Address", value: address)
-                }
-                if let cuisine = placesDetails.cuisine {
-                    detailRow("Cuisine", value: cuisine)
-                }
-                if let outdoor = placesDetails.outdoorSeating {
-                    detailRow("Outdoor seating", value: outdoor ? "Yes" : "No")
-                }
-                if let phone = placesDetails.phone {
-                    detailRow("Phone", value: phone)
-                }
-
-                if placesDetails.openingHours.isEmpty {
-                    Text("Opening hours unavailable")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                if shouldShowSunnyWin {
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) {
+                        animateScorePill = true
+                    }
                 } else {
-                    Text("Hours")
-                        .font(.subheadline.weight(.semibold))
-                    ForEach(placesDetails.openingHours, id: \.self) { line in
-                        Text(line)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
+                    animateScorePill = true
                 }
-
-                Text(placesDetails.menuText)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                if let website = placesDetails.websiteURL {
-                    Link(destination: website) {
-                        Label("Open website", systemImage: "safari")
-                    }
-                    .font(.subheadline.weight(.semibold))
-                }
-            } else if let placesErrorText {
-                Text(placesErrorText)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("No extra metadata yet.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var heroSection: some View {
+        ZStack(alignment: .topLeading) {
+            heroMedia
+                .overlay(
+                    LinearGradient(
+                        colors: [.clear, Color.black.opacity(0.42)],
+                        startPoint: .center,
+                        endPoint: .bottom
+                    )
+                )
+
+            if shouldShowSunnyWin {
+                RadialGradient(
+                    colors: [ThemeColor.sunBright.opacity(0.35), .clear],
+                    center: .topLeading,
+                    startRadius: 10,
+                    endRadius: 230
+                )
+                .allowsHitTesting(false)
+            }
+
+            scorePill
+                .padding(12)
+
+            VStack {
+                Spacer()
+                HStack(alignment: .bottom, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(cafe.name)
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.9)
+
+                        Text("\(condition.emoji) \(condition.rawValue)")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.95))
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                            isFavorite.toggle()
+                        }
+                    } label: {
+                        Image(systemName: isFavorite ? "heart.fill" : "heart")
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(isFavorite ? ThemeColor.sunBright : .white)
+                            .frame(width: 38, height: 38)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isFavorite ? "Remove from favorites" : "Add to favorites")
+                }
+                .padding(12)
+            }
+        }
+        .frame(height: 250)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    private var insightsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Highlights")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(ThemeColor.ink)
+
+            HStack(spacing: 10) {
+                insightCard(
+                    title: "Condition",
+                    value: condition.rawValue,
+                    subtitle: "Score \(scoreOutOf100)",
+                    systemImage: condition == .sunny ? "sun.max.fill" : (condition == .partial ? "cloud.sun.fill" : "cloud.fill"),
+                    tint: condition.color
+                )
+                insightCard(
+                    title: "Direct Sun",
+                    value: cafe.sunnyPercentString,
+                    subtitle: "Geometry",
+                    systemImage: "sun.horizon.fill",
+                    tint: ThemeColor.sun
+                ) {
+                    Button {
+                        showGeometryHelp = true
+                    } label: {
+                        Image(systemName: "questionmark.circle")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(ThemeColor.muted)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("What does geometry mean")
+                }
+            }
+
+            HStack(spacing: 10) {
+                insightCard(
+                    title: "Sky",
+                    value: skySummaryText,
+                    subtitle: "Cloud \(Int(cloudCover.rounded()))%",
+                    systemImage: skySystemImage,
+                    tint: skyTint
+                )
+                insightCard(
+                    title: "Sun",
+                    value: String(format: "%.1f°", cafe.sunElevationDeg),
+                    subtitle: "Azimuth \(String(format: "%.0f°", cafe.sunAzimuthDeg))",
+                    systemImage: "location.north.line.fill",
+                    tint: ThemeColor.focusBlue
+                )
+            }
+        }
+    }
+
+    private var technicalSection: some View {
+        DisclosureGroup(isExpanded: $showTechnicalDetails) {
+            VStack(spacing: 10) {
+                detailRow("Sun elevation", value: String(format: "%.1f°", cafe.sunElevationDeg))
+                detailRow("Sun azimuth", value: String(format: "%.1f°", cafe.sunAzimuthDeg))
+                detailRow("Coordinates", value: coordinateText)
+
+                Button {
+                    UIPasteboard.general.string = coordinateText
+                } label: {
+                    Label("Copy coordinates", systemImage: "doc.on.doc")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(ThemeColor.focusBlue)
+            }
+            .padding(.top, 8)
+        } label: {
+            Label("Technical details", systemImage: "wrench.and.screwdriver")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ThemeColor.ink)
         }
         .padding(14)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(ThemeColor.surfaceSoft.opacity(0.72), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var osmSection: some View {
+        DisclosureGroup(isExpanded: $showOSMDetails) {
+            VStack(alignment: .leading, spacing: 10) {
+                if isLoadingPlaces {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Loading OpenStreetMap details...")
+                            .font(.footnote)
+                            .foregroundStyle(ThemeColor.muted)
+                    }
+                } else if let details = placesDetails {
+                    if let address = details.formattedAddress {
+                        detailRow("Address", value: address)
+                    }
+                    if let cuisine = details.cuisine {
+                        detailRow("Cuisine", value: cuisine)
+                    }
+                    if let seating = details.outdoorSeating {
+                        detailRow("Outdoor seating", value: seating ? "Yes" : "No")
+                    }
+                    if let phone = details.phone {
+                        detailRow("Phone", value: phone)
+                    }
+                    if let website = details.websiteURL {
+                        Link(destination: website) {
+                            Label("Website", systemImage: "safari")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                    }
+                    if !details.openingHours.isEmpty {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Hours")
+                                .font(.subheadline.weight(.semibold))
+                            ForEach(details.openingHours, id: \.self) { line in
+                                Text(line)
+                                    .font(.footnote)
+                                    .foregroundStyle(ThemeColor.muted)
+                            }
+                        }
+                    }
+                    Text("Limited info from OpenStreetMap.")
+                        .font(.footnote)
+                        .foregroundStyle(ThemeColor.muted)
+                } else {
+                    Text(placesErrorText ?? "Limited info from OpenStreetMap. Using snapshot data only.")
+                        .font(.footnote)
+                        .foregroundStyle(ThemeColor.muted)
+                }
+            }
+            .padding(.top, 8)
+        } label: {
+            Label("More from OpenStreetMap", systemImage: "map")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ThemeColor.ink)
+        }
+        .padding(14)
+        .background(ThemeColor.surfaceSoft.opacity(0.72), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var navigationActions: some View {
+        HStack(spacing: 10) {
+            Button {
+                showNavigateOptions = true
+            } label: {
+                Label("Navigate", systemImage: "location.fill")
+                    .font(.subheadline.weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.9)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
+            .background(ThemeColor.focusBlue, in: Capsule())
+            .accessibilityLabel("Navigate to cafe")
+
+            ShareLink(item: shareURL, preview: SharePreview(cafe.name)) {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.headline.weight(.semibold))
+                    .frame(width: 44, height: 44)
+                    .background(ThemeColor.surfaceSoft, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Share cafe")
+        }
     }
 
     @ViewBuilder
-    private var lookAroundHeader: some View {
+    private var heroMedia: some View {
         if let lookAroundScene {
             LookAroundPreview(initialScene: lookAroundScene)
-                .frame(height: 160)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(alignment: .topLeading) {
-                    Text("Area preview")
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .padding(10)
-                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let snapshotImage {
             Image(uiImage: snapshotImage)
                 .resizable()
                 .scaledToFill()
-                .frame(height: 160)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(alignment: .topLeading) {
-                    Text("Area preview")
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .padding(10)
-                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [markerColor.opacity(0.45), Color(.tertiarySystemBackground)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+                LinearGradient(
+                    colors: [ThemeColor.sun.opacity(0.45), ThemeColor.surfaceSoft.opacity(0.6)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
                 VStack(spacing: 8) {
                     Image(systemName: "cup.and.saucer.fill")
-                        .font(.title2.weight(.semibold))
-                        .foregroundStyle(markerColor)
-                    Text(lookAroundLoading ? "Loading area preview..." : "No area preview here")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(ThemeColor.coffeeDark)
+                    Text(lookAroundLoading ? "Loading area preview..." : "Area preview unavailable")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(ThemeColor.ink.opacity(0.85))
                 }
-                .padding(20)
             }
-            .frame(height: 160)
         }
+    }
+
+    private var scorePill: some View {
+        Text("\(scoreOutOf100)/100")
+            .font(.title3.weight(.bold))
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .minimumScaleFactor(0.9)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(ThemeColor.sun, in: Capsule())
+            .scaleEffect(animateScorePill ? 1.0 : 0.92)
+            .accessibilityLabel("Score \(scoreOutOf100) out of 100")
+    }
+
+    private func insightCard(
+        title: String,
+        value: String,
+        subtitle: String,
+        systemImage: String,
+        tint: Color
+    ) -> some View {
+        insightCard(
+            title: title,
+            value: value,
+            subtitle: subtitle,
+            systemImage: systemImage,
+            tint: tint
+        ) {
+            EmptyView()
+        }
+    }
+
+    private func insightCard<T: View>(
+        title: String,
+        value: String,
+        subtitle: String,
+        systemImage: String,
+        tint: Color,
+        @ViewBuilder trailingAccessory: () -> T
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(tint)
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ThemeColor.muted)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                trailingAccessory()
+            }
+            Text(value)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(ThemeColor.ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(ThemeColor.muted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(ThemeColor.surfaceSoft.opacity(0.72), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func detailRow(_ title: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(ThemeColor.muted)
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ThemeColor.ink)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    private var condition: EffectiveCondition {
+        cafe.effectiveCondition(at: Date(), cloudCover: cloudCover)
+    }
+
+    private var cloudCover: Double {
+        cafe.cloudCoverPct ?? 50.0
+    }
+
+    private var shouldShowSunnyWin: Bool {
+        condition == .sunny && cloudCover < 20.0
+    }
+
+    private var scoreOutOf100: Int {
+        Int(cafe.sunnyScore.rounded())
+    }
+
+    private var coordinateText: String {
+        String(format: "%.5f, %.5f", cafe.lat, cafe.lon)
+    }
+
+    private var skySummaryText: String {
+        let sunnyPct = max(0, min(100, Int((100 - cloudCover).rounded())))
+        if sunnyPct >= Int(cloudCover.rounded()) {
+            return "Sunny \(sunnyPct)%"
+        }
+        return "Cloud \(Int(cloudCover.rounded()))%"
+    }
+
+    private var skySystemImage: String {
+        skySummaryText.contains("Sunny") ? "sun.max.fill" : "cloud.fill"
+    }
+
+    private var skyTint: Color {
+        skySummaryText.contains("Sunny") ? ThemeColor.sun : ThemeColor.muted
+    }
+
+    private var shareURL: URL {
+        URL(string: "https://www.google.com/maps/search/?api=1&query=\(cafe.lat),\(cafe.lon)")!
     }
 
     private func openAppleMaps() {
@@ -317,7 +514,7 @@ struct CafeDetailView: View {
         )
         let options = MKMapSnapshotter.Options()
         options.region = region
-        options.size = CGSize(width: 900, height: 360)
+        options.size = CGSize(width: 900, height: 500)
         options.showsBuildings = true
         options.pointOfInterestFilter = .includingAll
 
@@ -335,8 +532,7 @@ struct CafeDetailView: View {
         defer { isLoadingPlaces = false }
 
         do {
-            let details = try await placesService.fetchDetails(for: cafe)
-            placesDetails = details
+            placesDetails = try await placesService.fetchDetails(for: cafe)
             placesErrorText = nil
         } catch {
             placesDetails = nil
