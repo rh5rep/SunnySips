@@ -10,6 +10,7 @@ struct CafeMapView: UIViewRepresentable {
     let use3DMap: Bool
     let effectiveCloudCover: Double
     let showCloudOverlay: Bool
+    let isNightMode: Bool
     let warningMessage: String?
     var onRegionChanged: (MKCoordinateRegion) -> Void
     var onSelectCafe: (SunnyCafe) -> Void
@@ -225,11 +226,7 @@ struct CafeMapView: UIViewRepresentable {
             guard let cafeAnnotation = view.annotation as? CafePointAnnotation else {
                 return
             }
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            DispatchQueue.main.async {
-                self.parent.selectedCafe = cafeAnnotation.cafe
-                self.parent.onSelectCafe(cafeAnnotation.cafe)
-            }
+            parent.onSelectCafe(cafeAnnotation.cafe)
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
@@ -271,7 +268,7 @@ struct CafeMapView: UIViewRepresentable {
             if cloudOverlay == nil {
                 let polygon = worldBoundsPolygon()
                 cloudOverlay = polygon
-                mapView.addOverlay(polygon, level: .aboveRoads)
+                mapView.addOverlay(polygon, level: .aboveLabels)
             }
 
             if let renderer = cloudOverlayRenderer {
@@ -289,9 +286,27 @@ struct CafeMapView: UIViewRepresentable {
         }
 
         private func cloudOverlayFillColor(in mapView: MKMapView) -> UIColor {
-            let alpha = max(0.0, min((parent.effectiveCloudCover / 100.0) * 0.6, 0.4))
+            let cloudAlpha = max(0.0, min((parent.effectiveCloudCover / 100.0) * 0.8, 0.58))
+            let baselineAlpha: Double
+            if parent.isNightMode {
+                baselineAlpha = 0.36
+            } else if parent.warningMessage != nil {
+                baselineAlpha = 0.2
+            } else {
+                baselineAlpha = 0.0
+            }
+            let alpha = max(cloudAlpha, baselineAlpha)
             let isDarkMode = mapView.traitCollection.userInterfaceStyle == .dark
-            let base = isDarkMode ? UIColor(white: 0.08, alpha: 1.0) : UIColor(white: 0.55, alpha: 1.0)
+            let base: UIColor
+            if parent.isNightMode {
+                base = isDarkMode
+                    ? UIColor(red: 0.04, green: 0.05, blue: 0.08, alpha: 1.0)
+                    : UIColor(red: 0.34, green: 0.36, blue: 0.43, alpha: 1.0)
+            } else {
+                base = isDarkMode
+                    ? UIColor(white: 0.12, alpha: 1.0)
+                    : UIColor(white: 0.48, alpha: 1.0)
+            }
             return base.withAlphaComponent(alpha)
         }
 

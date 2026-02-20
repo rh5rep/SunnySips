@@ -55,7 +55,7 @@ final class SunnySipsViewModel: ObservableObject {
     var quickJumpMinutes: [Int] { [30, 60, 120, 180, 360] }
 
     var showCloudOverlay: Bool {
-        cloudCoverPct >= 50.0 || warningMessage != nil
+        cloudCoverPct >= 50.0 || warningMessage != nil || !isDaylight(at: selectedTargetTime)
     }
 
     var predictionRange: ClosedRange<Date> {
@@ -80,6 +80,29 @@ final class SunnySipsViewModel: ObservableObject {
 
     var nightBannerText: String? {
         isDaylight(at: selectedTargetTime) ? nil : "Nighttime - no sun possible at selected time"
+    }
+
+    var mapBannerText: String? {
+        if !isDaylight(at: selectedTargetTime) {
+            return "Night in Copenhagen - no direct sun"
+        }
+        if cloudCoverPct >= 95 {
+            return "Overcast \(Int(cloudCoverPct.rounded()))% - limited direct sun"
+        }
+        if let warningMessage {
+            return warningMessage
+        }
+        return nil
+    }
+
+    var mapBannerSymbol: String {
+        if !isDaylight(at: selectedTargetTime) { return "moon.stars.fill" }
+        if cloudCoverPct >= 95 { return "cloud.fill" }
+        return "exclamationmark.triangle.fill"
+    }
+
+    var mapBannerTone: TimePillTone {
+        !isDaylight(at: selectedTargetTime) ? .secondary : .muted
     }
 
     var subtitleLine: String {
@@ -186,8 +209,7 @@ final class SunnySipsViewModel: ObservableObject {
         let base = filters.useNow ? Date().roundedDownToQuarterHour() : filters.selectedTime
         let rawTarget = base.addingTimeInterval(Double(minutes) * 60.0)
         let clampedTarget = clampToPredictionRange(rawTarget)
-        guard clampedTarget > base else { return false }
-        return isDaylight(at: clampedTarget)
+        return clampedTarget > base
     }
 
     func onAppear() async {
@@ -602,30 +624,8 @@ final class SunnySipsViewModel: ObservableObject {
     }
 
     private func predictionRangeForCurrentArea(reference: Date = Date()) -> ClosedRange<Date> {
-        var calendar = Date.copenhagenCalendar
-        calendar.timeZone = copenhagenTimeZone
-
-        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: reference),
-              let todayWindow = SunlightCalculator.daylightWindow(
-                  on: reference,
-                  coordinate: filters.area.bbox.center,
-                  timeZone: copenhagenTimeZone
-              ),
-              let tomorrowWindow = SunlightCalculator.daylightWindow(
-                  on: tomorrow,
-                  coordinate: filters.area.bbox.center,
-                  timeZone: copenhagenTimeZone
-              )
-        else {
-            return Date.predictionRange24h
-        }
-
-        let lower = min(todayWindow.sunrise, tomorrowWindow.sunrise).roundedDownToQuarterHour()
-        let upper = max(todayWindow.sunrise, tomorrowWindow.sunrise).roundedDownToQuarterHour()
-        if upper <= lower {
-            return Date.predictionRange24h
-        }
-        return lower ... upper
+        _ = reference
+        return Date.predictionRange24h
     }
 
     private func isDaylight(at date: Date) -> Bool {

@@ -25,25 +25,25 @@ enum AppTheme: String, CaseIterable, Identifiable {
 }
 
 enum ThemeColor {
-    static let bg = Color(dynamicLight: "#F6F2E9", dark: "#111111")
-    static let surface = Color(dynamicLight: "#FFFDF8", dark: "#1A1A1A")
-    static let surfaceSoft = Color(dynamicLight: "#F1E9DB", dark: "#242424")
+    static let bg = Color(dynamicLight: "#F3ECE2", dark: "#111111")
+    static let surface = Color(dynamicLight: "#FBF6EE", dark: "#1A1A1A")
+    static let surfaceSoft = Color(dynamicLight: "#ECE1D2", dark: "#25201B")
 
-    static let coffee = Color(dynamicLight: "#8A6A4A", dark: "#B59577")
-    static let coffeeDark = Color(dynamicLight: "#5E4733", dark: "#E5CCB1")
-    static let sun = Color(dynamicLight: "#E5C36A", dark: "#F2D67C")
-    static let sunBright = Color(dynamicLight: "#F2D67C", dark: "#FFDFA3")
+    static let coffee = Color(dynamicLight: "#8B725C", dark: "#BFA58E")
+    static let coffeeDark = Color(dynamicLight: "#5A4738", dark: "#E8D7C4")
+    static let sun = Color(dynamicLight: "#E1C46F", dark: "#F0D586")
+    static let sunBright = Color(dynamicLight: "#F0D78F", dark: "#FFE3A7")
 
     static let ink = Color(dynamicLight: "#2F2A25", dark: "#F5F1E8")
-    static let muted = Color(dynamicLight: "#6E6459", dark: "#B7ADA1")
-    static let line = Color(dynamicLight: "#D9CCB5", dark: "#3A332B")
+    static let muted = Color(dynamicLight: "#796A5C", dark: "#B8AA9A")
+    static let line = Color(dynamicLight: "#D4C3AD", dark: "#3A322B")
 
     static let sunnyGreen = Color(dynamicLight: "#2E9D5B", dark: "#6FD98A")
     static let partialAmber = Color(dynamicLight: "#D89A28", dark: "#F0C05F")
     static let shadedRed = Color(dynamicLight: "#D9534F", dark: "#FF7E79")
 
-    static let focusBlue = Color(dynamicLight: "#3A7BD5", dark: "#74A7F5")
-    static let clusterGray = Color(dynamicLight: "#6F6C66", dark: "#9A9690")
+    static let focusBlue = Color(dynamicLight: "#4A82D7", dark: "#78AAFA")
+    static let clusterGray = Color(dynamicLight: "#72675D", dark: "#9D9288")
 
     static let accentGold = sun
 }

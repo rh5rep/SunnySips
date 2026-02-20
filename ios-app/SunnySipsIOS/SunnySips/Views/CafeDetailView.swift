@@ -19,6 +19,7 @@ struct CafeDetailView: View {
     @State private var showTechnicalDetails = false
     @State private var animateScorePill = false
     @State private var showGeometryHelp = false
+    @State private var showLookAroundViewer = false
 
     private let placesService = OverpassService()
 
@@ -86,18 +87,31 @@ struct CafeDetailView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: showNavigateOptions)
+            .sheet(isPresented: $showLookAroundViewer) {
+                lookAroundViewerSheet
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(ThemeColor.surface)
+            }
         }
     }
 
     private var heroSection: some View {
         ZStack(alignment: .topTrailing) {
             heroMedia
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if lookAroundScene != nil {
+                        showLookAroundViewer = true
+                    }
+                }
                 .overlay(
                     LinearGradient(
                         colors: [Color.black.opacity(0.12), Color.black.opacity(0.58)],
                         startPoint: .center,
                         endPoint: .bottom
                     )
+                    .allowsHitTesting(false)
                 )
 
             if shouldShowSunnyWin {
@@ -163,6 +177,7 @@ struct CafeDetailView: View {
                 .padding(12)
             }
         }
+        .frame(maxWidth: .infinity)
         .frame(height: 250)
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
@@ -248,11 +263,11 @@ struct CafeDetailView: View {
                     tint: skyTint
                 )
                 insightCard(
-                    title: "Sun",
-                    value: String(format: "%.1f°", cafe.sunElevationDeg),
-                    subtitle: "Azimuth \(String(format: "%.0f°", cafe.sunAzimuthDeg))",
-                    systemImage: "location.north.line.fill",
-                    tint: ThemeColor.focusBlue
+                    title: "Sun time left",
+                    value: expectedSunTimeLeftText,
+                    subtitle: expectedSunTimeLeftSubtitle,
+                    systemImage: "timer",
+                    tint: condition.color
                 )
             }
         }
@@ -423,11 +438,13 @@ struct CafeDetailView: View {
         if let lookAroundScene {
             LookAroundPreview(initialScene: lookAroundScene)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
         } else if let snapshotImage {
             Image(uiImage: snapshotImage)
                 .resizable()
                 .scaledToFill()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
         } else {
             ZStack {
                 LinearGradient(
@@ -442,6 +459,39 @@ struct CafeDetailView: View {
                     Text(lookAroundLoading ? "Loading area preview..." : "Area preview unavailable")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(ThemeColor.ink.opacity(0.85))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+        }
+    }
+
+    private var lookAroundViewerSheet: some View {
+        NavigationStack {
+            ZStack {
+                ThemeColor.bg.ignoresSafeArea()
+                if let lookAroundScene {
+                    LookAroundPreview(initialScene: lookAroundScene)
+                        .ignoresSafeArea(edges: .bottom)
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "binoculars.fill")
+                            .font(.system(size: 34, weight: .semibold))
+                            .foregroundStyle(ThemeColor.muted)
+                        Text("Look Around unavailable for this location")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ThemeColor.ink)
+                    }
+                    .padding(20)
+                }
+            }
+            .navigationTitle(cafe.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        showLookAroundViewer = false
+                    }
                 }
             }
         }
@@ -558,6 +608,46 @@ struct CafeDetailView: View {
 
     private var scoreOutOf100: Int {
         Int(cafe.sunnyScore.rounded())
+    }
+
+    private var estimatedSunMinutes: Int {
+        guard cafe.sunElevationDeg > 0 else { return 0 }
+
+        let baseMinutes: Double
+        switch condition {
+        case .sunny:
+            baseMinutes = 95
+        case .partial:
+            baseMinutes = 48
+        case .shaded:
+            baseMinutes = 10
+        }
+
+        let elevationFactor = max(0.25, min(1.0, cafe.sunElevationDeg / 24.0))
+        let cloudFactor = max(0.2, 1.0 - (cloudCover / 100.0) * 0.75)
+        var estimate = baseMinutes * elevationFactor * cloudFactor
+
+        if cafe.sunElevationDeg < 6 {
+            estimate = min(estimate, 20)
+        }
+        if condition == .shaded {
+            estimate = min(estimate, 10)
+        }
+
+        let roundedToFive = Int((estimate / 5.0).rounded()) * 5
+        return max(0, roundedToFive)
+    }
+
+    private var expectedSunTimeLeftText: String {
+        if estimatedSunMinutes <= 0 { return "0-5 min" }
+        if estimatedSunMinutes >= 90 { return "90+ min" }
+        return "\(estimatedSunMinutes) min"
+    }
+
+    private var expectedSunTimeLeftSubtitle: String {
+        if condition == .shaded { return "Low chance at this spot" }
+        if cafe.sunElevationDeg < 6 { return "Sun dropping soon" }
+        return "Estimated for current conditions"
     }
 
     private var coordinateText: String {
