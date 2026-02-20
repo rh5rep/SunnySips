@@ -639,15 +639,91 @@ struct CafeDetailView: View {
     }
 
     private var expectedSunTimeLeftText: String {
+        if condition == .shaded {
+            return shadedForecastSunText
+        }
         if estimatedSunMinutes <= 0 { return "0-5 min" }
         if estimatedSunMinutes >= 90 { return "90+ min" }
         return "\(estimatedSunMinutes) min"
     }
 
     private var expectedSunTimeLeftSubtitle: String {
-        if condition == .shaded { return "Low chance at this spot" }
+        if condition == .shaded {
+            return shadedForecastSunSubtitle
+        }
         if cafe.sunElevationDeg < 6 { return "Sun dropping soon" }
-        return "Estimated for current conditions"
+        return "Current estimate"
+    }
+
+    private var shadedForecastSunText: String {
+        let forecast = shadedForecastForToday
+        if forecast.expectedToday {
+            if let nextTime = forecast.nextSunTime {
+                return "After \(forecastTimeText(nextTime))"
+            }
+            return "Before sunset"
+        }
+        return "No sun today"
+    }
+
+    private var shadedForecastSunSubtitle: String {
+        shadedForecastForToday.expectedToday ? "Sun expected today" : "No sun expected today"
+    }
+
+    private var shadedForecastForToday: (expectedToday: Bool, nextSunTime: Date?) {
+        let now = Date()
+        let timeZone = TimeZone(identifier: "Europe/Copenhagen") ?? .current
+        guard let window = SunlightCalculator.daylightWindow(
+            on: now,
+            coordinate: cafe.coordinate,
+            timeZone: timeZone
+        ) else {
+            return (false, nil)
+        }
+
+        if now >= window.sunset {
+            return (false, nil)
+        }
+
+        if now < window.sunrise {
+            return (true, window.sunrise)
+        }
+
+        let minutesToSunset = Int(window.sunset.timeIntervalSince(now) / 60.0)
+        if cloudCover >= EffectiveCondition.heavyCloudOverrideThreshold || minutesToSunset < 20 {
+            return (false, nil)
+        }
+
+        // Use a lightweight cloud-based heuristic to provide an estimated "next sun" time today.
+        let estimateMinutes: Int?
+        switch cloudCover {
+        case ..<35:
+            estimateMinutes = 15
+        case ..<55:
+            estimateMinutes = 30
+        case ..<70:
+            estimateMinutes = 60
+        case ..<EffectiveCondition.heavyCloudOverrideThreshold where minutesToSunset >= 120:
+            estimateMinutes = 90
+        default:
+            estimateMinutes = nil
+        }
+
+        if let estimateMinutes {
+            let estimated = now.addingTimeInterval(Double(estimateMinutes) * 60.0)
+            let safeSunset = window.sunset.addingTimeInterval(-10 * 60.0)
+            return (true, min(estimated, safeSunset))
+        }
+
+        return (false, nil)
+    }
+
+    private func forecastTimeText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Date.copenhagenCalendar
+        formatter.timeZone = TimeZone(identifier: "Europe/Copenhagen") ?? .current
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 
     private var coordinateText: String {

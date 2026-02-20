@@ -263,16 +263,25 @@ final class SunnySipsViewModel: ObservableObject {
 
     func useNowChanged(_ useNow: Bool) {
         filters.useNow = useNow
-        if !useNow {
+        if useNow {
+            // Reset forecast baseline so returning to forecast starts fresh.
+            filters.selectedTime = clampToPredictionRange(Date().addingTimeInterval(30 * 60))
+        } else {
             filters.selectedTime = clampToPredictionRange(filters.selectedTime)
         }
+        Task { await reloadFromAPI() }
+    }
+
+    func resetForecastTime() {
+        filters.selectedTime = clampToPredictionRange(Date().addingTimeInterval(30 * 60))
+        guard !filters.useNow else { return }
         Task { await reloadFromAPI() }
     }
 
     func togglePredictFutureMode() {
         if filters.useNow {
             filters.useNow = false
-            filters.selectedTime = clampToPredictionRange(Date().addingTimeInterval(60 * 60))
+            filters.selectedTime = clampToPredictionRange(Date().addingTimeInterval(30 * 60))
         } else {
             filters.useNow = true
         }
@@ -487,7 +496,11 @@ final class SunnySipsViewModel: ObservableObject {
         let search = filters.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let selectedBuckets = filters.selectedBuckets
         var filtered = allCafes
-            .filter { selectedBuckets.isEmpty || selectedBuckets.contains(effectiveCondition(for: $0).filterValue) }
+            .filter {
+                // While searching, include all buckets so matches are not hidden by sunny/partial/shaded toggles.
+                if !search.isEmpty { return true }
+                return selectedBuckets.isEmpty || selectedBuckets.contains(effectiveCondition(for: $0).filterValue)
+            }
             .filter { $0.sunnyScore >= filters.minScore }
             .filter { !filters.favoritesOnly || favoriteCafeIDs.contains($0.id) }
 

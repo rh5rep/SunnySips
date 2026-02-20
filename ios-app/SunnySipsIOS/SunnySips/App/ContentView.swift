@@ -31,6 +31,11 @@ struct ContentView: View {
     @State private var activeSheet: ActiveSheet?
     @State private var showOnboarding = false
     @State private var didEvaluateOnboarding = false
+    @State private var showCafeSearchField = false
+    @State private var cafeSearchText = ""
+    @State private var isForecastPlaybackActive = false
+    @State private var forecastPlaybackTask: Task<Void, Never>?
+    @FocusState private var cafeSearchFocused: Bool
 
     private var theme: AppTheme {
         AppTheme(rawValue: themeRawValue) ?? .system
@@ -73,6 +78,15 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .transition(.move(edge: .top).combined(with: .opacity))
 
+                if isCafeSearchListVisible {
+                    cafeSearchResultsOverlay
+                        .padding(.horizontal, 20)
+                        .padding(.top, 74)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .zIndex(5)
+                }
+
                 VStack(spacing: 8) {
                     statusPillsBar
                     statsHeader
@@ -106,11 +120,15 @@ struct ContentView: View {
                 await viewModel.onAppear()
             }
             .onAppear {
+                cafeSearchText = viewModel.filters.searchText
                 guard !didEvaluateOnboarding else { return }
                 didEvaluateOnboarding = true
                 if !hasSeenOnboardingV1 {
                     showOnboarding = true
                 }
+            }
+            .onChange(of: cafeSearchText) { _, text in
+                viewModel.searchChanged(text)
             }
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
@@ -118,6 +136,12 @@ struct ContentView: View {
                     viewModel.startAutoRefresh()
                 default:
                     viewModel.stopAutoRefresh()
+                    stopForecastPlayback()
+                }
+            }
+            .onChange(of: viewModel.filters.useNow) { _, isNow in
+                if isNow {
+                    stopForecastPlayback()
                 }
             }
             .overlay {
@@ -232,24 +256,61 @@ struct ContentView: View {
                         .frame(width: 44, height: 44)
                 }
                 .frame(width: 28, height: 28)
-                Text("SunnySips")
-                    .font(.title2.weight(.bold))
-                    .foregroundStyle(ThemeColor.coffeeDark)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.92)
-                    .allowsTightening(true)
+                if showCafeSearchField {
+                    HStack(spacing: 6) {
+                        TextField("Search cafes", text: $cafeSearchText)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .focused($cafeSearchFocused)
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(ThemeColor.coffeeDark)
 
-                Button {
-                    presentFilters()
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 15, weight: .semibold))
+                        Button {
+                            if cafeSearchText.isEmpty {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showCafeSearchField = false
+                                }
+                                cafeSearchFocused = false
+                            } else {
+                                cafeSearchText = ""
+                            }
+                        } label: {
+                            Image(systemName: cafeSearchText.isEmpty ? "xmark" : "xmark.circle.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(ThemeColor.coffeeDark.opacity(0.85))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(cafeSearchText.isEmpty ? "Close cafe search" : "Clear cafe search")
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 34)
+                    .background(ThemeColor.surfaceSoft.opacity(0.92), in: Capsule())
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                } else {
+                    Text("SunnySips")
+                        .font(.title2.weight(.bold))
                         .foregroundStyle(ThemeColor.coffeeDark)
-                        .frame(width: 30, height: 30)
-                        .background(ThemeColor.surfaceSoft.opacity(0.95), in: Circle())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.92)
+                        .allowsTightening(true)
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showCafeSearchField = true
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            cafeSearchFocused = true
+                        }
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(ThemeColor.coffeeDark)
+                            .frame(width: 30, height: 30)
+                            .background(ThemeColor.surfaceSoft.opacity(0.95), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Search cafes")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Search cafes")
             }
             .padding(.horizontal, 18)
             .frame(height: 54)
@@ -260,6 +321,76 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
+    }
+
+    private var isCafeSearchListVisible: Bool {
+        let query = cafeSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return showCafeSearchField && !query.isEmpty
+    }
+
+    private var cafeSearchResults: [SunnyCafe] {
+        Array(viewModel.cafes.prefix(8))
+    }
+
+    private var cafeSearchResultsOverlay: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if cafeSearchResults.isEmpty {
+                Text("No cafes found")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ThemeColor.muted)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+            } else {
+                ForEach(cafeSearchResults) { cafe in
+                    Button {
+                        viewModel.selectCafeFromList(cafe)
+                        presentDetail(cafe)
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showCafeSearchField = false
+                        }
+                        cafeSearchFocused = false
+                    } label: {
+                        HStack(spacing: 8) {
+                            let condition = cafe.effectiveCondition(at: Date(), cloudCover: cafe.cloudCoverPct ?? viewModel.cloudCoverPct)
+                            Circle()
+                                .fill(condition.color)
+                                .frame(width: 9, height: 9)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(cafe.name)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(ThemeColor.ink)
+                                    .lineLimit(1)
+                                Text("\(condition.rawValue) • \(cafe.scoreString)")
+                                    .font(.caption)
+                                    .foregroundStyle(ThemeColor.muted)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(ThemeColor.muted.opacity(0.8))
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.plain)
+
+                    if cafe.id != cafeSearchResults.last?.id {
+                        Divider()
+                            .overlay(ThemeColor.line.opacity(0.35))
+                            .padding(.horizontal, 12)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ThemeColor.surface.opacity(0.98), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(ThemeColor.line.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: ThemeColor.coffeeDark.opacity(0.12), radius: 8, x: 0, y: 4)
     }
 
     private var statusPillsBar: some View {
@@ -316,13 +447,6 @@ struct ContentView: View {
 
                 Spacer(minLength: 6)
 
-                Picker("", selection: useNowBinding) {
-                    Text("Live").tag(true)
-                    Text("Forecast").tag(false)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 154)
-
                 headerIconButton(systemName: "line.3.horizontal", accessibility: "Open filters") {
                     presentFilters()
                 }
@@ -376,7 +500,8 @@ struct ContentView: View {
                 bucketChip(bucket: .sunny, label: "\(viewModel.stats.sunny)", icon: "sun.max.fill", color: ThemeColor.sunnyGreen)
                 bucketChip(bucket: .partial, label: "\(viewModel.stats.partial)", icon: "cloud.sun.fill", color: ThemeColor.partialAmber)
                 bucketChip(bucket: .shaded, label: "\(viewModel.stats.shaded)", icon: "cloud.fill", color: ThemeColor.shadedRed)
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+                modeToggleBar
             }
 
             if let warning = viewModel.warningMessage {
@@ -406,24 +531,44 @@ struct ContentView: View {
                         }
                         Spacer(minLength: 8)
                         Button {
-                            viewModel.useNowChanged(true)
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                viewModel.resetForecastTime()
+                            }
                         } label: {
-                            Label("Live", systemImage: "dot.radiowaves.left.and.right")
+                            Label("Reset", systemImage: "arrow.counterclockwise")
                                 .timePillStyle(.secondary, size: .small)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Back to live mode")
+                        .accessibilityLabel("Reset forecast time")
+
+                        Button {
+                            toggleForecastPlayback()
+                        } label: {
+                            Label(
+                                isForecastPlaybackActive ? "Pause" : "Play +3h",
+                                systemImage: isForecastPlaybackActive ? "pause.fill" : "play.fill"
+                            )
+                            .timePillStyle(isForecastPlaybackActive ? .primary : .secondary, size: .small)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(isForecastPlaybackActive ? "Pause forecast playback" : "Play forecast 3 hours ahead")
                     }
 
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
+                            forecastJumpChip(minutes: 15)
                             forecastJumpChip(minutes: 30)
                             forecastJumpChip(minutes: 60)
                             forecastJumpChip(minutes: 120)
                             forecastJumpChip(minutes: 180)
                             forecastJumpChip(minutes: 360)
-                            forecastJumpChip(minutes: 720)
                         }
+                    }
+
+                    if isForecastPlaybackActive {
+                        Text("Playing forecast in 30 minute steps to +3h")
+                            .font(.caption2)
+                            .foregroundStyle(ThemeColor.muted)
                     }
 
                     Button {
@@ -465,13 +610,36 @@ struct ContentView: View {
         .shadow(color: ThemeColor.coffeeDark.opacity(0.1), radius: 8, x: 0, y: 4)
     }
 
-    private var useNowBinding: Binding<Bool> {
-        Binding(
-            get: { viewModel.filters.useNow },
-            set: { useNow in
+    private var modeToggleBar: some View {
+        HStack(spacing: 4) {
+            modeToggleButton(title: "Live", useNow: true)
+            modeToggleButton(title: "Forecast", useNow: false)
+        }
+        .padding(4)
+        .background(ThemeColor.surfaceSoft.opacity(0.98), in: Capsule())
+        .overlay(Capsule().stroke(ThemeColor.line.opacity(0.4), lineWidth: 1))
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func modeToggleButton(title: String, useNow: Bool) -> some View {
+        let isSelected = viewModel.filters.useNow == useNow
+        return Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
                 viewModel.useNowChanged(useNow)
             }
-        )
+        } label: {
+            Text(title)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(isSelected ? ThemeColor.surface : ThemeColor.coffeeDark)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(
+                    Capsule()
+                        .fill(isSelected ? ThemeColor.focusBlue : .clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Switch to \(title) mode")
     }
 
     private var mapFloatingControls: some View {
@@ -543,7 +711,7 @@ struct ContentView: View {
 
     private func forecastJumpChip(minutes: Int) -> some View {
         let enabled = viewModel.canJumpForward(minutes: minutes)
-        let selected = abs(selectedForecastOffsetMinutes - minutes) <= 15
+        let selected = selectedForecastChipMinutes == minutes
 
         return Button {
             withAnimation(.spring(duration: 0.22)) {
@@ -576,6 +744,17 @@ struct ContentView: View {
         guard !viewModel.filters.useNow else { return 0 }
         let now = Date().roundedDownToQuarterHour()
         return max(0, Int(viewModel.filters.selectedTime.timeIntervalSince(now) / 60.0))
+    }
+
+    private var selectedForecastChipMinutes: Int {
+        let options = [15, 30, 60, 120, 180, 360]
+        let offset = selectedForecastOffsetMinutes
+        return options.min {
+            let left = abs($0 - offset)
+            let right = abs($1 - offset)
+            if left == right { return $0 < $1 }
+            return left < right
+        } ?? 15
     }
 
     private var cloudPercentRounded: Int {
@@ -783,6 +962,51 @@ struct ContentView: View {
 
     private func presentDetail(_ cafe: SunnyCafe) {
         activeSheet = .detail(cafe)
+    }
+
+    private func toggleForecastPlayback() {
+        if isForecastPlaybackActive {
+            stopForecastPlayback()
+        } else {
+            startForecastPlayback()
+        }
+    }
+
+    private func startForecastPlayback() {
+        stopForecastPlayback()
+        if viewModel.filters.useNow {
+            viewModel.useNowChanged(false)
+        }
+        isForecastPlaybackActive = true
+
+        let base = Date().roundedDownToQuarterHour()
+        let start = max(base, viewModel.predictionRange.lowerBound.roundedDownToQuarterHour())
+        let maxEnd = viewModel.predictionRange.upperBound.roundedDownToQuarterHour()
+        let end = min(start.addingTimeInterval(3 * 60 * 60), maxEnd)
+        let step: TimeInterval = 30 * 60
+
+        forecastPlaybackTask = Task { @MainActor in
+            var current = start
+            viewModel.setForecastTime(current)
+
+            while !Task.isCancelled && current < end {
+                try? await Task.sleep(nanoseconds: 1_050_000_000)
+                guard !Task.isCancelled else { break }
+                current = min(current.addingTimeInterval(step), end)
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    viewModel.setForecastTime(current)
+                }
+            }
+
+            isForecastPlaybackActive = false
+            forecastPlaybackTask = nil
+        }
+    }
+
+    private func stopForecastPlayback() {
+        forecastPlaybackTask?.cancel()
+        forecastPlaybackTask = nil
+        isForecastPlaybackActive = false
     }
 
 }

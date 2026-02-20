@@ -33,14 +33,15 @@ struct CafeMapView: UIViewRepresentable {
         applyBaseMapStyle(to: mapView)
         mapView.isPitchEnabled = use3DMap
         mapView.setRegion(region, animated: false)
-        context.coordinator.applyAnnotations(to: mapView, cafes: cafes)
+        context.coordinator.applyAnnotations(to: mapView, cafes: cafes, around: region)
         context.coordinator.updateCloudOverlay(on: mapView)
         return mapView
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
         context.coordinator.parent = self
-        context.coordinator.applyAnnotations(to: mapView, cafes: cafes)
+        let renderRegion = mapView.region.approximatelyEquals(region) ? mapView.region : region
+        context.coordinator.applyAnnotations(to: mapView, cafes: cafes, around: renderRegion)
 
         if locateRequestID != context.coordinator.lastLocateRequestID {
             context.coordinator.lastLocateRequestID = locateRequestID
@@ -87,8 +88,9 @@ struct CafeMapView: UIViewRepresentable {
             locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         }
 
-        func applyAnnotations(to mapView: MKMapView, cafes: [SunnyCafe]) {
-            let incomingIDs = Set(cafes.map(\.id))
+        func applyAnnotations(to mapView: MKMapView, cafes: [SunnyCafe], around region: MKCoordinateRegion) {
+            let visibleCafes = cafesNear(region: region, within: cafes)
+            let incomingIDs = Set(visibleCafes.map(\.id))
             var toRemove: [CafePointAnnotation] = []
             let userCoordinate = mapView.userLocation.location?.coordinate
             let isDimmed = parent.warningMessage != nil
@@ -102,7 +104,7 @@ struct CafeMapView: UIViewRepresentable {
             }
 
             var toAdd: [CafePointAnnotation] = []
-            for cafe in cafes {
+            for cafe in visibleCafes {
                 let distance = cafe.distanceMeters(from: userCoordinate)
                 let condition = cafe.effectiveCondition(
                     at: Date(),
@@ -122,6 +124,23 @@ struct CafeMapView: UIViewRepresentable {
 
             if !toAdd.isEmpty {
                 mapView.addAnnotations(toAdd)
+            }
+        }
+
+        private func cafesNear(region: MKCoordinateRegion, within cafes: [SunnyCafe]) -> [SunnyCafe] {
+            // Keep a small buffer around the viewport so panning feels smooth without rendering the full dataset.
+            let latitudeBuffer = max(region.span.latitudeDelta * 0.8, 0.01)
+            let longitudeBuffer = max(region.span.longitudeDelta * 0.8, 0.01)
+
+            let minLat = region.center.latitude - (region.span.latitudeDelta * 0.5) - latitudeBuffer
+            let maxLat = region.center.latitude + (region.span.latitudeDelta * 0.5) + latitudeBuffer
+            let minLon = region.center.longitude - (region.span.longitudeDelta * 0.5) - longitudeBuffer
+            let maxLon = region.center.longitude + (region.span.longitudeDelta * 0.5) + longitudeBuffer
+
+            return cafes.filter {
+                let coordinate = $0.coordinate
+                return coordinate.latitude >= minLat && coordinate.latitude <= maxLat &&
+                    coordinate.longitude >= minLon && coordinate.longitude <= maxLon
             }
         }
 
@@ -243,6 +262,7 @@ struct CafeMapView: UIViewRepresentable {
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             updateCloudOverlay(on: mapView)
+            applyAnnotations(to: mapView, cafes: parent.cafes, around: mapView.region)
 
             let region = mapView.region
             let wasProgrammatic = isProgrammaticRegionChange
