@@ -60,7 +60,10 @@ struct ContentView: View {
                         presentDetail(cafe)
                     },
                     onPermissionDenied: { viewModel.locationPermissionDenied() },
-                    onUserLocationUpdate: { viewModel.updateUserLocation($0) }
+                    onUserLocationUpdate: { viewModel.updateUserLocation($0) },
+                    onMapTap: {
+                        cafeSearchFocused = false
+                    }
                 )
                 .ignoresSafeArea()
 
@@ -416,6 +419,14 @@ struct ContentView: View {
 
     private var statsHeader: some View {
         VStack(alignment: .leading, spacing: 7) {
+            Capsule()
+                .fill(ThemeColor.line.opacity(0.7))
+                .frame(width: 52, height: 5)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 2)
+                .padding(.bottom, 2)
+                .accessibilityHidden(true)
+
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Menu {
@@ -447,52 +458,8 @@ struct ContentView: View {
 
                 Spacer(minLength: 6)
 
-                headerIconButton(systemName: "line.3.horizontal", accessibility: "Open filters") {
+                headerIconButton(systemName: "line.3.horizontal.decrease.circle", accessibility: "Open filters") {
                     presentFilters()
-                }
-            }
-
-            HStack(spacing: 8) {
-                HStack(spacing: 10) {
-                    Image(systemName: cloudPercentRounded >= 60 ? "cloud.fill" : "cloud.sun.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(ThemeColor.focusBlue)
-                        .accessibilityHidden(true)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Cloud \(cloudPercentRounded)%")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(ThemeColor.ink)
-
-                        ProgressView(value: Double(cloudPercentRounded), total: 100.0)
-                            .tint(ThemeColor.accentGold)
-                            .accessibilityLabel("Cloud cover \(cloudPercentRounded) percent")
-                    }
-                }
-                .padding(.horizontal, 12)
-                .frame(height: 54)
-                .background(ThemeColor.surfaceSoft.opacity(0.9), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-
-                VStack(alignment: .trailing, spacing: 2) {
-                    Button {
-                        Task { await viewModel.refreshTapped() }
-                    } label: {
-                        if viewModel.isRefreshing {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(ThemeColor.focusBlue)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Refresh cafes")
-
-                    Text(viewModel.snapshotFreshnessText)
-                        .font(.caption2)
-                        .foregroundStyle(ThemeColor.muted)
-                        .lineLimit(1)
                 }
             }
 
@@ -520,16 +487,7 @@ struct ContentView: View {
 
             if !viewModel.filters.useNow {
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Forecast")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(ThemeColor.muted)
-                            Text(viewModel.selectedForecastTimeText)
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(ThemeColor.ink)
-                        }
-                        Spacer(minLength: 8)
+                    HStack(alignment: .center, spacing: 8) {
                         Button {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 viewModel.resetForecastTime()
@@ -540,6 +498,8 @@ struct ContentView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Reset forecast time")
+
+                        Spacer(minLength: 8)
 
                         Button {
                             toggleForecastPlayback()
@@ -608,6 +568,8 @@ struct ContentView: View {
                 .stroke(ThemeColor.line.opacity(0.55), lineWidth: 1)
         )
         .shadow(color: ThemeColor.coffeeDark.opacity(0.1), radius: 8, x: 0, y: 4)
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .simultaneousGesture(modeSwipeGesture)
     }
 
     private var modeToggleBar: some View {
@@ -615,9 +577,10 @@ struct ContentView: View {
             modeToggleButton(title: "Live", useNow: true)
             modeToggleButton(title: "Forecast", useNow: false)
         }
-        .padding(4)
+        .padding(2)
         .background(ThemeColor.surfaceSoft.opacity(0.98), in: Capsule())
         .overlay(Capsule().stroke(ThemeColor.line.opacity(0.4), lineWidth: 1))
+        .frame(height: controlPillHeight)
         .fixedSize(horizontal: true, vertical: false)
     }
 
@@ -631,8 +594,8 @@ struct ContentView: View {
             Text(title)
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(isSelected ? ThemeColor.surface : ThemeColor.coffeeDark)
-                .padding(.horizontal, 10)
-                .frame(height: 30)
+                .padding(.horizontal, 12)
+                .frame(height: controlPillHeight - 4)
                 .background(
                     Capsule()
                         .fill(isSelected ? ThemeColor.focusBlue : .clear)
@@ -799,6 +762,9 @@ struct ContentView: View {
     }
 
     private var weatherStatusPillText: String {
+        if !viewModel.filters.useNow {
+            return viewModel.selectedForecastTimeText
+        }
         if viewModel.usingLiveWeather {
             return viewModel.weatherIsForecast ? "Forecast" : "Live data"
         }
@@ -806,7 +772,29 @@ struct ContentView: View {
     }
 
     private var weatherStatusPillSymbol: String {
-        viewModel.weatherPillSymbol
+        if !viewModel.filters.useNow {
+            return "clock.arrow.circlepath"
+        }
+        return viewModel.weatherPillSymbol
+    }
+
+    private var modeSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 24, coordinateSpace: .local)
+            .onEnded { value in
+                let vertical = value.translation.height
+                let horizontal = abs(value.translation.width)
+                guard abs(vertical) > horizontal, abs(vertical) > 24 else { return }
+
+                if vertical < 0, viewModel.filters.useNow {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        viewModel.useNowChanged(false)
+                    }
+                } else if vertical > 0, !viewModel.filters.useNow {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        viewModel.useNowChanged(true)
+                    }
+                }
+            }
     }
 
     private func bucketChip(bucket: SunnyBucketFilter, label: String, icon: String, color: Color) -> some View {
@@ -825,7 +813,7 @@ struct ContentView: View {
             }
             .font(.caption2.weight(.semibold))
             .padding(.horizontal, 9)
-            .padding(.vertical, 6)
+            .frame(height: controlPillHeight)
             .background(
                 Capsule()
                     .fill(isSelected ? color.opacity(0.95) : ThemeColor.surfaceSoft.opacity(0.95))
@@ -834,6 +822,8 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Filter \(bucket.title)")
     }
+
+    private var controlPillHeight: CGFloat { 34 }
 
     private var loadingView: some View {
         ZStack {
@@ -896,7 +886,8 @@ struct ContentView: View {
                     presentDetail(cafe)
                 },
                 onPermissionDenied: { viewModel.locationPermissionDenied() },
-                onUserLocationUpdate: { viewModel.updateUserLocation($0) }
+                onUserLocationUpdate: { viewModel.updateUserLocation($0) },
+                onMapTap: {}
             )
             .ignoresSafeArea(edges: .bottom)
             .navigationTitle("Full Map")

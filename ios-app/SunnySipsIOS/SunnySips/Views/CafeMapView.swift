@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import CoreLocation
+import UIKit
 
 struct CafeMapView: UIViewRepresentable {
     let cafes: [SunnyCafe]
@@ -16,6 +17,7 @@ struct CafeMapView: UIViewRepresentable {
     var onSelectCafe: (SunnyCafe) -> Void
     var onPermissionDenied: () -> Void
     var onUserLocationUpdate: (CLLocationCoordinate2D) -> Void
+    var onMapTap: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -30,6 +32,10 @@ struct CafeMapView: UIViewRepresentable {
         mapView.register(UserLocationAnnotationView.self, forAnnotationViewWithReuseIdentifier: UserLocationAnnotationView.reuseIdentifier)
         mapView.register(CafeAnnotationView.self, forAnnotationViewWithReuseIdentifier: CafeAnnotationView.reuseIdentifier)
         mapView.register(CafeClusterAnnotationView.self, forAnnotationViewWithReuseIdentifier: CafeClusterAnnotationView.reuseIdentifier)
+        let tapRecognizer = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleMapTap(_:)))
+        tapRecognizer.cancelsTouchesInView = false
+        tapRecognizer.delegate = context.coordinator
+        mapView.addGestureRecognizer(tapRecognizer)
         applyBaseMapStyle(to: mapView)
         mapView.isPitchEnabled = use3DMap
         mapView.setRegion(region, animated: false)
@@ -68,7 +74,7 @@ struct CafeMapView: UIViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate {
+    final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate, UIGestureRecognizerDelegate {
         var parent: CafeMapView
         weak var mapView: MKMapView?
         var annotationsByID: [String: CafePointAnnotation] = [:]
@@ -276,6 +282,17 @@ struct CafeMapView: UIViewRepresentable {
             if wasProgrammatic {
                 return
             }
+        }
+
+        @objc func handleMapTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended else { return }
+            DispatchQueue.main.async {
+                self.parent.onMapTap()
+            }
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            true
         }
 
         func updateCloudOverlay(on mapView: MKMapView) {
