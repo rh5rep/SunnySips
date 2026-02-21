@@ -471,9 +471,7 @@ final class SunnySipsViewModel: ObservableObject {
                 effectiveCafes = effectiveCafes.map { $0.applyingNightOverride() }
             }
             allCafes = effectiveCafes
-            warningMessage = effectiveCloudCover >= EffectiveCondition.heavyCloudOverrideThreshold
-                ? "Heavy clouds - effectively shaded at selected time"
-                : nil
+            warningMessage = nil
 
             if result.fromCache {
                 errorMessage = "Offline mode: showing cached cafes."
