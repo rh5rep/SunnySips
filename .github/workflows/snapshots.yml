@@ -3,7 +3,7 @@ name: Build And Deploy Snapshots
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 * * * *"
 
 permissions:
   contents: read
@@ -38,7 +38,7 @@ jobs:
 
       - name: Generate snapshots
         run: |
-          python scripts/generate_snapshots.py --output-dir site/latest --slot-minutes 15 --days 2
+          python scripts/generate_snapshots.py --output-dir site/latest --slot-minutes 60 --days 5
 
       - name: Upload pages artifact
         uses: actions/upload-pages-artifact@v3

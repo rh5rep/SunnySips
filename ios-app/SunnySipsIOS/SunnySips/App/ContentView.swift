@@ -52,7 +52,8 @@ struct ContentView: View {
                     use3DMap: viewModel.use3DMap,
                     effectiveCloudCover: viewModel.cloudCoverPct,
                     showCloudOverlay: viewModel.showCloudOverlay,
-                    isNightMode: viewModel.nightBannerText != nil,
+                    isNightMode: viewModel.isNightModeActive,
+                    sunsetTransitionProgress: viewModel.sunsetTransitionProgress,
                     warningMessage: viewModel.warningMessage,
                     onRegionChanged: { viewModel.mapRegionChanged($0) },
                     onSelectCafe: { cafe in
@@ -68,7 +69,7 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
                 if mapHazeOpacity > 0 {
-                    ThemeColor.coffeeDark
+                    mapHazeColor
                         .opacity(mapHazeOpacity)
                         .ignoresSafeArea()
                         .allowsHitTesting(false)
@@ -189,6 +190,12 @@ struct ContentView: View {
                 case .favorites:
                     FavoritesView(
                         cafes: viewModel.favoriteCafes,
+                        recommendations: viewModel.favoriteRecommendations,
+                        recommendationStatus: viewModel.recommendationDataStatus,
+                        recommendationFreshnessHours: viewModel.recommendationFreshnessHours,
+                        onRefreshRecommendations: {
+                            await viewModel.refreshFavoriteRecommendations()
+                        },
                         onTapCafe: { cafe in
                             viewModel.selectCafeFromList(cafe)
                             presentDetail(cafe)
@@ -729,11 +736,18 @@ struct ContentView: View {
     }
 
     private var isNightStatus: Bool {
-        viewModel.nightBannerText != nil
+        viewModel.isNightModeActive
+    }
+
+    private var isSunsetStatus: Bool {
+        viewModel.sunsetTransitionProgress > 0
     }
 
     private var mapHazeOpacity: Double {
         if isNightStatus { return 0.3 }
+        if isSunsetStatus {
+            return max(0.18, min(0.18 + (viewModel.sunsetTransitionProgress * 0.2), 0.36))
+        }
         if viewModel.warningMessage != nil { return 0.22 }
         if viewModel.showCloudOverlay {
             return max(0.14, min((viewModel.cloudCoverPct / 100.0) * 0.44, 0.33))
@@ -741,9 +755,18 @@ struct ContentView: View {
         return 0
     }
 
+    private var mapHazeColor: Color {
+        if isNightStatus { return ThemeColor.coffeeDark }
+        if isSunsetStatus { return Color(dynamicLight: "#BF7345", dark: "#5F3D2B") }
+        return ThemeColor.coffeeDark
+    }
+
     private var skyCoveragePillText: String {
         if isNightStatus {
             return "Night"
+        }
+        if isSunsetStatus {
+            return "Sunset"
         }
         if sunnyPercentRounded >= cloudPercentRounded {
             return "Sunny \(sunnyPercentRounded)%"
@@ -753,11 +776,13 @@ struct ContentView: View {
 
     private var skyCoveragePillSymbol: String {
         if isNightStatus { return "moon.stars.fill" }
+        if isSunsetStatus { return "sunset.fill" }
         return sunnyPercentRounded >= cloudPercentRounded ? "sun.max.fill" : "cloud.fill"
     }
 
     private var skyCoveragePillTone: TimePillTone {
         if isNightStatus { return .secondary }
+        if isSunsetStatus { return .muted }
         return sunnyPercentRounded >= cloudPercentRounded ? .sunny : .secondary
     }
 
@@ -878,7 +903,8 @@ struct ContentView: View {
                 use3DMap: viewModel.use3DMap,
                 effectiveCloudCover: viewModel.cloudCoverPct,
                 showCloudOverlay: viewModel.showCloudOverlay,
-                isNightMode: viewModel.nightBannerText != nil,
+                isNightMode: viewModel.isNightModeActive,
+                sunsetTransitionProgress: viewModel.sunsetTransitionProgress,
                 warningMessage: viewModel.warningMessage,
                 onRegionChanged: { viewModel.mapRegionChanged($0) },
                 onSelectCafe: { cafe in

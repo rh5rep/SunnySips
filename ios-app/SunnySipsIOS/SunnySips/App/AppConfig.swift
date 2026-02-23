@@ -1,12 +1,24 @@
 import Foundation
 
 enum AppConfig {
+    static let homeCityDefault: String = {
+        ProcessInfo.processInfo.environment["SUNNYSIPS_HOME_CITY_DEFAULT"] ?? "copenhagen"
+    }()
+
     static let apiBaseURL: URL? = {
         if let raw = ProcessInfo.processInfo.environment["SUNNYSIPS_API_BASE_URL"],
            let url = URL(string: raw) {
             return url
         }
         return nil
+    }()
+
+    static let recommendationAPIBaseURL: URL? = {
+        if let raw = ProcessInfo.processInfo.environment["SUNNYSIPS_RECOMMENDATION_API_BASE_URL"],
+           let url = URL(string: raw) {
+            return url
+        }
+        return apiBaseURL
     }()
 
     static let snapshotBaseURL: URL = {

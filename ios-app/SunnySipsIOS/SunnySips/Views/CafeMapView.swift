@@ -12,6 +12,7 @@ struct CafeMapView: UIViewRepresentable {
     let effectiveCloudCover: Double
     let showCloudOverlay: Bool
     let isNightMode: Bool
+    let sunsetTransitionProgress: Double
     let warningMessage: String?
     var onRegionChanged: (MKCoordinateRegion) -> Void
     var onSelectCafe: (SunnyCafe) -> Void
@@ -99,7 +100,7 @@ struct CafeMapView: UIViewRepresentable {
             let incomingIDs = Set(visibleCafes.map(\.id))
             var toRemove: [CafePointAnnotation] = []
             let userCoordinate = mapView.userLocation.location?.coordinate
-            let isDimmed = parent.warningMessage != nil
+            let isDimmed = parent.warningMessage != nil || parent.isNightMode || parent.sunsetTransitionProgress > 0
 
             for (id, existing) in annotationsByID where !incomingIDs.contains(id) {
                 toRemove.append(existing)
@@ -231,7 +232,11 @@ struct CafeMapView: UIViewRepresentable {
                 for: cafeAnnotation
             ) as! CafeAnnotationView
             let condition = cafeAnnotation.condition
-            view.apply(cafe: cafeAnnotation.cafe, condition: condition, isDimmed: parent.warningMessage != nil)
+            view.apply(
+                cafe: cafeAnnotation.cafe,
+                condition: condition,
+                isDimmed: parent.warningMessage != nil || parent.isNightMode || parent.sunsetTransitionProgress > 0
+            )
             return view
         }
 
@@ -324,9 +329,12 @@ struct CafeMapView: UIViewRepresentable {
 
         private func cloudOverlayFillColor(in mapView: MKMapView) -> UIColor {
             let cloudAlpha = max(0.0, min((parent.effectiveCloudCover / 100.0) * 0.8, 0.58))
+            let sunsetProgress = max(0.0, min(parent.sunsetTransitionProgress, 1.0))
             let baselineAlpha: Double
             if parent.isNightMode {
                 baselineAlpha = 0.36
+            } else if sunsetProgress > 0 {
+                baselineAlpha = 0.14 + (sunsetProgress * 0.14)
             } else if parent.warningMessage != nil {
                 baselineAlpha = 0.2
             } else {
@@ -339,6 +347,10 @@ struct CafeMapView: UIViewRepresentable {
                 base = isDarkMode
                     ? UIColor(red: 0.04, green: 0.05, blue: 0.08, alpha: 1.0)
                     : UIColor(red: 0.34, green: 0.36, blue: 0.43, alpha: 1.0)
+            } else if sunsetProgress > 0 {
+                let sunsetLight = UIColor(red: 0.75, green: 0.49, blue: 0.30, alpha: 1.0)
+                let sunsetDark = UIColor(red: 0.35, green: 0.22, blue: 0.15, alpha: 1.0)
+                base = isDarkMode ? sunsetDark : sunsetLight
             } else {
                 base = isDarkMode
                     ? UIColor(white: 0.12, alpha: 1.0)

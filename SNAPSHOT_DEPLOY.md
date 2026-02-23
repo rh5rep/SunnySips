@@ -55,6 +55,10 @@ After success, snapshots are available at:
 
 ## 5) Update cadence
 
-Workflow schedule is set to every 15 minutes (`*/15 * * * *`).
+Workflow schedule is set to hourly (`0 * * * *`).
+
+Generation settings in workflow are:
+- `--slot-minutes 60`
+- `--days 5`
 
 Adjust in `.github/workflows/snapshots.yml` if needed.

@@ -6,6 +6,10 @@ import CoreLocation
 
 @MainActor
 final class SunnySipsViewModel: ObservableObject {
+    @AppStorage("homeCityId") var homeCityId = AppConfig.homeCityDefault
+    @AppStorage("recsMinDurationMin") var recsMinDurationMin = 30
+    @AppStorage("recsPreferredPeriods") var recsPreferredPeriodsRaw = "morning,lunch,afternoon"
+
     @Published private(set) var cafes: [SunnyCafe] = []
     @Published private(set) var visibleCafes: [SunnyCafe] = []
     @Published private(set) var stats: SunnyStatsSummary = .empty
@@ -24,6 +28,11 @@ final class SunnySipsViewModel: ObservableObject {
 
     @Published private(set) var userLocation: CLLocationCoordinate2D?
     @Published private(set) var favoriteCafeIDs: Set<String> = []
+    @Published private(set) var favoriteRecommendations: [FavoriteRecommendationItem] = []
+    @Published private(set) var recommendationDataStatus: RecommendationDataStatus = .unavailable
+    @Published private(set) var recommendationFreshnessHours: Double?
+    @Published private(set) var recommendationProviderUsed: String?
+    @Published private(set) var recommendationError: String?
 
     @Published var selectedCafe: SunnyCafe?
     @Published var mapRegion: MKCoordinateRegion = SunnyArea.coreCopenhagen.bbox.region
@@ -43,19 +52,36 @@ final class SunnySipsViewModel: ObservableObject {
 
     private let apiService = SunnyAPIService()
     private let liveWeatherService = LiveWeatherService()
+    private let recommendationService = RecommendationService()
     private var allCafes: [SunnyCafe] = []
     private var hasLoaded = false
     private var searchTask: Task<Void, Never>?
     private var autoRefreshTask: Task<Void, Never>?
+    private var recommendationTask: Task<Void, Never>?
 
     private let favoritesDefaultsKey = "sunnysips.favoriteCafeIDs"
     private let copenhagenTimeZone = TimeZone(identifier: "Europe/Copenhagen") ?? .current
+    private let sunsetTransitionDuration: TimeInterval = 45 * 60
 
     var areaTitle: String { filters.area.title }
     var quickJumpMinutes: [Int] { [30, 60, 120, 180, 360] }
+    var recommendationPreferredPeriods: [String] {
+        recsPreferredPeriodsRaw
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+    }
 
     var showCloudOverlay: Bool {
         cloudCoverPct >= 50.0 || warningMessage != nil || !isDaylight(at: selectedTargetTime)
+    }
+
+    var isNightModeActive: Bool {
+        isNightMode(at: selectedTargetTime)
+    }
+
+    var sunsetTransitionProgress: Double {
+        sunsetTwilightProgress(at: selectedTargetTime)
     }
 
     var predictionRange: ClosedRange<Date> {
@@ -79,11 +105,14 @@ final class SunnySipsViewModel: ObservableObject {
     }
 
     var nightBannerText: String? {
-        isDaylight(at: selectedTargetTime) ? nil : "Nighttime - no sun possible at selected time"
+        isNightModeActive ? "Nighttime - no sun possible at selected time" : nil
     }
 
     var mapBannerText: String? {
-        if !isDaylight(at: selectedTargetTime) {
+        if isSunsetTwilight(at: selectedTargetTime) {
+            return "Sunset in Copenhagen - fading daylight"
+        }
+        if isNightModeActive {
             return "Night in Copenhagen - no direct sun"
         }
         if cloudCoverPct >= 95 {
@@ -96,13 +125,15 @@ final class SunnySipsViewModel: ObservableObject {
     }
 
     var mapBannerSymbol: String {
-        if !isDaylight(at: selectedTargetTime) { return "moon.stars.fill" }
+        if isSunsetTwilight(at: selectedTargetTime) { return "sunset.fill" }
+        if isNightModeActive { return "moon.stars.fill" }
         if cloudCoverPct >= 95 { return "cloud.fill" }
         return "exclamationmark.triangle.fill"
     }
 
     var mapBannerTone: TimePillTone {
-        !isDaylight(at: selectedTargetTime) ? .secondary : .muted
+        if isSunsetTwilight(at: selectedTargetTime) { return .muted }
+        return isNightModeActive ? .secondary : .muted
     }
 
     var subtitleLine: String {
@@ -190,6 +221,13 @@ final class SunnySipsViewModel: ObservableObject {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    var recommendationPrefsPayload: RecommendationPrefsPayload {
+        RecommendationPrefsPayload(
+            minDurationMin: max(0, recsMinDurationMin),
+            preferredPeriods: recommendationPreferredPeriods.isEmpty ? ["morning", "lunch", "afternoon"] : recommendationPreferredPeriods
+        )
+    }
+
     func jumpForward(minutes: Int) {
         let base = filters.useNow ? Date().roundedDownToQuarterHour() : filters.selectedTime
         let rawTarget = base.addingTimeInterval(Double(minutes) * 60.0)
@@ -219,6 +257,7 @@ final class SunnySipsViewModel: ObservableObject {
         mapRegion = filters.area.bbox.region
         visibleRegion = mapRegion
         await reloadFromAPI()
+        await refreshFavoriteRecommendations()
         startAutoRefresh()
     }
 
@@ -375,10 +414,49 @@ final class SunnySipsViewModel: ObservableObject {
         }
         persistFavoritesToDefaults()
         applyLocalFilters()
+        recommendationTask?.cancel()
+        recommendationTask = Task { [weak self] in
+            await self?.refreshFavoriteRecommendations()
+        }
     }
 
     func isFavorite(_ cafe: SunnyCafe) -> Bool {
         favoriteCafeIDs.contains(cafe.id)
+    }
+
+    func refreshFavoriteRecommendations() async {
+        recommendationError = nil
+        let ids = Array(favoriteCafeIDs)
+        print("[SunnySipsVM] refreshFavoriteRecommendations city=\(homeCityId) favorites=\(ids.count)")
+        guard !ids.isEmpty else {
+            favoriteRecommendations = []
+            recommendationDataStatus = .unavailable
+            recommendationFreshnessHours = nil
+            recommendationProviderUsed = nil
+            return
+        }
+        do {
+            let response = try await recommendationService.fetchFavoriteRecommendations(
+                cafeIds: ids,
+                cityId: "copenhagen",
+                days: 5,
+                prefs: recommendationPrefsPayload
+            )
+            print("[SunnySipsVM] recommendations status=\(response.dataStatus.rawValue) provider=\(response.providerUsed ?? "none") freshness=\(response.freshnessHours.map { String($0) } ?? "nil")")
+            favoriteRecommendations = response.items
+            recommendationDataStatus = response.dataStatus
+            recommendationFreshnessHours = response.freshnessHours
+            recommendationProviderUsed = response.providerUsed
+        } catch {
+            print("[SunnySipsVM] recommendations error=\(error.localizedDescription)")
+            recommendationError = error.localizedDescription
+            recommendationDataStatus = .unavailable
+            recommendationFreshnessHours = nil
+            recommendationProviderUsed = nil
+            if favoriteRecommendations.isEmpty {
+                favoriteRecommendations = []
+            }
+        }
     }
 
     func toggleMapStyle() {
@@ -652,5 +730,38 @@ final class SunnySipsViewModel: ObservableObject {
             return elevation > 0
         }
         return true
+    }
+
+    private func isNightMode(at date: Date) -> Bool {
+        guard !isDaylight(at: date) else { return false }
+        return !isSunsetTwilight(at: date)
+    }
+
+    private func isSunsetTwilight(at date: Date) -> Bool {
+        guard let window = SunlightCalculator.daylightWindow(
+            on: date,
+            coordinate: filters.area.bbox.center,
+            timeZone: copenhagenTimeZone
+        ) else {
+            return false
+        }
+
+        let lastLight = window.sunset.addingTimeInterval(sunsetTransitionDuration)
+        return date > window.sunset && date <= lastLight
+    }
+
+    private func sunsetTwilightProgress(at date: Date) -> Double {
+        guard let window = SunlightCalculator.daylightWindow(
+            on: date,
+            coordinate: filters.area.bbox.center,
+            timeZone: copenhagenTimeZone
+        ) else {
+            return 0
+        }
+
+        let lastLight = window.sunset.addingTimeInterval(sunsetTransitionDuration)
+        guard date > window.sunset && date <= lastLight else { return 0 }
+        let elapsed = date.timeIntervalSince(window.sunset)
+        return max(0, min(1, elapsed / sunsetTransitionDuration))
     }
 }
