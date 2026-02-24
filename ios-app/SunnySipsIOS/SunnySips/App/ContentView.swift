@@ -193,6 +193,8 @@ struct ContentView: View {
                         recommendations: viewModel.favoriteRecommendations,
                         recommendationStatus: viewModel.recommendationDataStatus,
                         recommendationFreshnessHours: viewModel.recommendationFreshnessHours,
+                        recommendationProviderUsed: viewModel.recommendationProviderUsed,
+                        recommendationError: viewModel.recommendationError,
                         onRefreshRecommendations: {
                             await viewModel.refreshFavoriteRecommendations()
                         },

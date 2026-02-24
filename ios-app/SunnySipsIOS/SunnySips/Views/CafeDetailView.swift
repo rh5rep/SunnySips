@@ -24,6 +24,7 @@ struct CafeDetailView: View {
     @State private var sunOutlook: CafeSunOutlookResponse?
     @State private var isLoadingSunOutlook = false
     @State private var sunOutlookError: String?
+    @State private var selectedOutlookDayID: String?
 
     private let placesService = OverpassService()
     private let recommendationService = RecommendationService()
@@ -338,6 +339,11 @@ struct CafeDetailView: View {
                     .font(.caption2)
                     .foregroundStyle(ThemeColor.muted)
             }
+            if dailyOutlookSummaries != nil {
+                Text("Tap a day to focus its best sun windows.")
+                    .font(.caption2)
+                    .foregroundStyle(ThemeColor.muted)
+            }
 
             if isLoadingSunOutlook {
                 HStack(spacing: 8) {
@@ -353,8 +359,9 @@ struct CafeDetailView: View {
                 }
 
                 if let grouped = groupedSunOutlookWindows, !grouped.isEmpty {
+                    let visibleGroups = visibleOutlookGroups(from: grouped)
                     VStack(spacing: 8) {
-                        ForEach(grouped, id: \.day) { group in
+                        ForEach(visibleGroups) { group in
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(group.day)
                                     .font(.subheadline.weight(.semibold))
@@ -377,6 +384,12 @@ struct CafeDetailView: View {
                             }
                         }
                     }
+                } else if let summaries = dailyOutlookSummaries,
+                          let selectedDay = selectedOutlookDayID,
+                          summaries.contains(where: { $0.id == selectedDay }) {
+                    Text("No sunny/partial windows for selected day.")
+                        .font(.footnote)
+                        .foregroundStyle(ThemeColor.muted)
                 } else if let error = sunOutlookError {
                     Text(error)
                         .font(.footnote)
@@ -394,20 +407,37 @@ struct CafeDetailView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(summaries) { day in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(day.dayLabel)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(ThemeColor.ink)
-                        Text("Cloud \(day.averageCloudPct)%")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(ThemeColor.muted)
-                        Text(day.sunSlots > 0 ? "\(day.sunSlots) sunny slots" : "No sunny slots")
-                            .font(.caption2)
-                            .foregroundStyle(day.sunSlots > 0 ? ThemeColor.focusBlue : ThemeColor.muted)
+                    let isSelected = selectedOutlookDayID == day.id
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            selectedOutlookDayID = day.id
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(day.dayLabel)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(ThemeColor.ink)
+                            Text("Cloud \(day.averageCloudPct)%")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(ThemeColor.muted)
+                            Text(day.sunWindowCount > 0 ? "\(day.sunWindowCount) sun windows" : "No sun windows")
+                                .font(.caption2)
+                                .foregroundStyle(day.sunWindowCount > 0 ? ThemeColor.focusBlue : ThemeColor.muted)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .frame(minHeight: 44, alignment: .leading)
+                        .background(
+                            isSelected ? ThemeColor.focusBlue.opacity(0.14) : ThemeColor.surfaceSoft.opacity(0.74),
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(isSelected ? ThemeColor.focusBlue.opacity(0.45) : .clear, lineWidth: 1)
+                        )
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(ThemeColor.surfaceSoft.opacity(0.74), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(day.dayLabel), cloud \(day.averageCloudPct) percent, \(day.sunWindowCount) sun windows")
                 }
             }
             .padding(.bottom, 2)
@@ -952,6 +982,7 @@ struct CafeDetailView: View {
                 minDuration: 30
             )
             sunOutlook = response
+            syncSelectedOutlookDay()
             let coverageDays = Set(response.hourly.map { String($0.timeLocal.prefix(10)) }).count
             print("[CafeDetail] SunOutlook loaded cafe=\(cafe.id) provider=\(response.providerUsed ?? "none") status=\(response.dataStatus.rawValue) fallback=\(response.fallbackUsed) hourly=\(response.hourly.count) windows=\(response.windows.count) coverageDays=\(coverageDays)")
             if response.dataStatus == .unavailable {
@@ -960,15 +991,28 @@ struct CafeDetailView: View {
         } catch {
             print("[CafeDetail] SunOutlook error cafe=\(cafe.id) city=copenhagen error=\(error)")
             sunOutlook = nil
+            selectedOutlookDayID = nil
             sunOutlookError = "Temporarily unavailable—check connection."
         }
+    }
+
+    private func syncSelectedOutlookDay() {
+        guard let summaries = dailyOutlookSummaries, !summaries.isEmpty else {
+            selectedOutlookDayID = nil
+            return
+        }
+        if let selectedOutlookDayID,
+           summaries.contains(where: { $0.id == selectedOutlookDayID }) {
+            return
+        }
+        selectedOutlookDayID = summaries.first?.id
     }
 
     private struct DailyOutlookSummary: Identifiable {
         let id: String
         let dayLabel: String
         let averageCloudPct: Int
-        let sunSlots: Int
+        let sunWindowCount: Int
     }
 
     private var dailyOutlookSummaries: [DailyOutlookSummary]? {
@@ -978,6 +1022,10 @@ struct CafeDetailView: View {
             let key = String(point.timeLocal.prefix(10))
             grouped[key, default: []].append(point)
         }
+        let windowCountsByDay: [String: Int] = Dictionary(
+            grouping: sunOutlook?.windows ?? [],
+            by: { String($0.startLocal.prefix(10)) }
+        ).mapValues(\.count)
 
         return grouped
             .map { key, rows in
@@ -985,12 +1033,11 @@ struct CafeDetailView: View {
                 let avgCloud = clouds.isEmpty
                     ? 50
                     : Int((clouds.reduce(0, +) / Double(clouds.count)).rounded())
-                let sunSlots = rows.filter { isSunWindowCondition($0.condition) }.count
                 return DailyOutlookSummary(
                     id: key,
                     dayLabel: rows.first?.timeLocal.formattedDayOnly() ?? key,
                     averageCloudPct: max(0, min(100, avgCloud)),
-                    sunSlots: sunSlots
+                    sunWindowCount: windowCountsByDay[key] ?? 0
                 )
             }
             .sorted { $0.id < $1.id }
@@ -1000,7 +1047,7 @@ struct CafeDetailView: View {
         guard let summaries = dailyOutlookSummaries, !summaries.isEmpty else {
             return "No sunny/partial windows in next \(sunOutlookDays) days"
         }
-        let allNoSun = summaries.allSatisfy { $0.sunSlots == 0 }
+        let allNoSun = summaries.allSatisfy { $0.sunWindowCount == 0 }
         if allNoSun {
             return "No sunny/partial windows in next \(sunOutlookDays) days. Forecast stays mostly cloudy/shaded."
         }
@@ -1016,7 +1063,22 @@ struct CafeDetailView: View {
         dailyOutlookSummaries?.count ?? 0
     }
 
-    private var groupedSunOutlookWindows: [(day: String, windows: [SunOutlookWindow])]? {
+    private struct OutlookWindowGroup: Identifiable {
+        let key: String
+        let day: String
+        let windows: [SunOutlookWindow]
+        var id: String { key }
+    }
+
+    private func visibleOutlookGroups(from groups: [OutlookWindowGroup]) -> [OutlookWindowGroup] {
+        guard let selectedOutlookDayID else { return groups }
+        if let matched = groups.first(where: { $0.key == selectedOutlookDayID }) {
+            return [matched]
+        }
+        return groups
+    }
+
+    private var groupedSunOutlookWindows: [OutlookWindowGroup]? {
         guard let windows = sunOutlook?.windows, !windows.isEmpty else { return nil }
         var buckets: [String: [SunOutlookWindow]] = [:]
         for window in windows {
@@ -1025,14 +1087,13 @@ struct CafeDetailView: View {
         }
         return buckets
             .map { key, values in
-                (
+                OutlookWindowGroup(
+                    key: key,
                     day: values.first?.startLocal.formattedDayOnly() ?? key,
-                    windows: values.sorted { $0.startLocal < $1.startLocal },
-                    key: key
+                    windows: values.sorted { $0.startLocal < $1.startLocal }
                 )
             }
             .sorted { $0.key < $1.key }
-            .map { (day: $0.day, windows: $0.windows) }
     }
 }
 

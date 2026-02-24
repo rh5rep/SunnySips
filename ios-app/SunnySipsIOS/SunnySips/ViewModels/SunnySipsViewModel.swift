@@ -427,6 +427,9 @@ final class SunnySipsViewModel: ObservableObject {
     func refreshFavoriteRecommendations() async {
         recommendationError = nil
         let ids = Array(favoriteCafeIDs)
+        let previousStatus = recommendationDataStatus
+        let previousFreshness = recommendationFreshnessHours
+        let previousProvider = recommendationProviderUsed
         print("[SunnySipsVM] refreshFavoriteRecommendations city=\(homeCityId) favorites=\(ids.count)")
         guard !ids.isEmpty else {
             favoriteRecommendations = []
@@ -450,11 +453,15 @@ final class SunnySipsViewModel: ObservableObject {
         } catch {
             print("[SunnySipsVM] recommendations error=\(error.localizedDescription)")
             recommendationError = error.localizedDescription
-            recommendationDataStatus = .unavailable
-            recommendationFreshnessHours = nil
-            recommendationProviderUsed = nil
             if favoriteRecommendations.isEmpty {
+                recommendationDataStatus = .unavailable
+                recommendationFreshnessHours = nil
+                recommendationProviderUsed = nil
                 favoriteRecommendations = []
+            } else {
+                recommendationDataStatus = previousStatus
+                recommendationFreshnessHours = previousFreshness
+                recommendationProviderUsed = previousProvider
             }
         }
     }

@@ -53,12 +53,12 @@ actor RecommendationService {
     func fetchCafeSunWindows(
         cafeId: String,
         cityId: String,
-        days: Int = 7,
+        days: Int = 5,
         minDuration: Int = 30
     ) async throws -> CafeSunOutlookResponse {
         _ = cityId
         let effectiveCityId = "copenhagen"
-        let cappedDays = max(1, min(7, days))
+        let cappedDays = max(1, min(5, days))
         let cacheKey = "sun-series-\(effectiveCityId)-\(cafeId)-\(cappedDays)-\(max(0, minDuration))"
         if apiBaseURL == nil,
            let staticOutlook = try? await fetchFromSnapshotPages(
@@ -180,6 +180,18 @@ actor RecommendationService {
     ) async throws -> FavoritesRecommendationResponse {
         let sortedCafeIDs = cafeIds.sorted()
         let cacheKey = "favorites-\(cityId)-\(days)-\(sortedCafeIDs.joined(separator: "_"))-\(prefs.minDurationMin)-\(prefs.preferredPeriods.sorted().joined(separator: "_"))"
+        if apiBaseURL == nil,
+           let staticRecs = try? await fetchFavoriteRecommendationsFromSnapshotPages(
+               cafeIds: sortedCafeIDs,
+               cityId: cityId,
+               days: days,
+               prefs: prefs
+           ) {
+            print("[RecommendationService] using snapshot-pages recommendations (no API base URL)")
+            let cachedPayload = try encoder.encode(staticRecs)
+            try saveCache(cacheKey: cacheKey, data: cachedPayload)
+            return staticRecs
+        }
         do {
             let url = try buildRecommendationsURL()
             var request = URLRequest(url: url)
@@ -203,10 +215,23 @@ actor RecommendationService {
             try saveCache(cacheKey: cacheKey, data: data)
             return decoded
         } catch {
+            print("[RecommendationService] recommendations fetch failed city=\(cityId) favorites=\(sortedCafeIDs.count) error=\(error)")
             if let cached = try? loadCachedData(cacheKey: cacheKey),
                let decoded = try? decoder.decode(FavoritesRecommendationResponse.self, from: cached.data),
                cached.ageHours <= staleTTLHours {
+                print("[RecommendationService] using stale recommendations cache ageHours=\(cached.ageHours)")
                 return staleRecommendations(decoded, ageHours: cached.ageHours)
+            }
+            if let staticRecs = try? await fetchFavoriteRecommendationsFromSnapshotPages(
+                cafeIds: sortedCafeIDs,
+                cityId: cityId,
+                days: days,
+                prefs: prefs
+            ) {
+                print("[RecommendationService] using snapshot-pages recommendations after API failure")
+                let cachedPayload = try encoder.encode(staticRecs)
+                try saveCache(cacheKey: cacheKey, data: cachedPayload)
+                return staticRecs
             }
             throw error
         }
@@ -226,7 +251,7 @@ actor RecommendationService {
 
         components?.queryItems = [
             URLQueryItem(name: "city_id", value: cityId),
-            URLQueryItem(name: "days", value: String(max(1, min(7, days)))),
+            URLQueryItem(name: "days", value: String(max(1, min(5, days)))),
         ]
         guard let url = components?.url else { throw RecommendationServiceError.invalidURL }
         return url
@@ -390,15 +415,26 @@ actor RecommendationService {
         minDuration: Int
     ) throws -> CafeSunOutlookResponse {
         if let decoded = try? decoder.decode(CafeSunOutlookResponse.self, from: data) {
-            return decoded
+            let normalizedHourly = normalizeHourlyPoints(decoded.hourly)
+            return CafeSunOutlookResponse(
+                cafeID: decoded.cafeID,
+                cityID: decoded.cityID,
+                timezone: decoded.timezone,
+                dataStatus: decoded.dataStatus,
+                freshnessHours: decoded.freshnessHours,
+                providerUsed: decoded.providerUsed,
+                fallbackUsed: decoded.fallbackUsed,
+                hourly: normalizedHourly,
+                windows: mergeHourlyIntoWindows(normalizedHourly, minDuration: minDuration),
+                generatedAtUTC: decoded.generatedAtUTC
+            )
         }
         let raw = try decoder.decode(SunSeriesResponse.self, from: data)
         let hourly = (raw.hourly ?? []).sorted {
             parseISODate($0.timeUTC) ?? .distantPast < parseISODate($1.timeUTC) ?? .distantPast
         }
-        let windows = !(raw.windows ?? []).isEmpty
-            ? (raw.windows ?? [])
-            : mergeHourlyIntoWindows(hourly, minDuration: minDuration)
+        let normalizedHourly = normalizeHourlyPoints(hourly)
+        let windows = mergeHourlyIntoWindows(normalizedHourly, minDuration: minDuration)
 
         return CafeSunOutlookResponse(
             cafeID: raw.cafeID ?? requestedCafeID,
@@ -408,7 +444,7 @@ actor RecommendationService {
             freshnessHours: raw.freshnessHours,
             providerUsed: raw.providerUsed,
             fallbackUsed: raw.fallbackUsed ?? false,
-            hourly: hourly,
+            hourly: normalizedHourly,
             windows: windows,
             generatedAtUTC: raw.generatedAtUTC ?? iso8601UTCString(Date())
         )
@@ -421,12 +457,18 @@ actor RecommendationService {
         var hasSunny = false
 
         for index in hourly.indices {
-            let isSunAvailable = isSunWindowCondition(hourly[index].condition)
+            let pointCondition = canonicalCondition(
+                rawCondition: hourly[index].condition,
+                score: hourly[index].score,
+                cloudCoverPct: hourly[index].cloudCoverPct,
+                sunElevationDeg: nil
+            )
+            let isSunAvailable = isSunWindowCondition(pointCondition)
             if isSunAvailable {
                 if startIndex == nil {
                     startIndex = index
-                    hasSunny = hourly[index].condition.lowercased() == "sunny"
-                } else if hourly[index].condition.lowercased() == "sunny" {
+                    hasSunny = pointCondition == "sunny"
+                } else if pointCondition == "sunny" {
                     hasSunny = true
                 }
             }
@@ -546,13 +588,19 @@ actor RecommendationService {
             guard let result = try? await snapshotService.fetchSunny(area: area, requestedTime: target) else { continue }
             guard let cafe = result.response.cafes.first(where: { $0.id == cafeId }) else { continue }
             let cloud = result.response.cloudCoverPct
-            let condition = cafe.effectiveCondition(at: target, cloudCover: cloud).rawValue.lowercased()
+            let score = cafe.sunnyScore(at: target, cloudCover: cloud)
+            let condition = canonicalCondition(
+                rawCondition: cafe.effectiveCondition(at: target, cloudCover: cloud).rawValue.lowercased(),
+                score: score,
+                cloudCoverPct: cloud,
+                sunElevationDeg: cafe.sunElevationDeg
+            )
             return SunOutlookHourlyPoint(
                 timeUTC: iso8601UTCString(target),
                 timeLocal: iso8601LocalString(target, timezoneID: "Europe/Copenhagen"),
                 timezone: "Europe/Copenhagen",
                 condition: condition,
-                score: cafe.sunnyScore(at: target, cloudCover: cloud),
+                score: score,
                 confidenceHint: 0.5,
                 cloudCoverPct: cloud
             )
@@ -598,8 +646,10 @@ actor RecommendationService {
         let maxHours = max(24, days * 24)
         let hourly = sorted.prefix(maxHours).map { point in
             let cloud = point.cafe.cloudCoverPct ?? point.snapshot.cloudCoverPct
-            let condition = classifySnapshotCondition(
-                sunnyFraction: point.cafe.sunnyFraction,
+            let condition = canonicalCondition(
+                rawCondition: nil,
+                score: point.cafe.sunnyScore,
+                cloudCoverPct: cloud,
                 sunElevationDeg: point.cafe.sunElevationDeg
             )
             let hoursAhead = max(
@@ -637,6 +687,160 @@ actor RecommendationService {
         )
     }
 
+    private func fetchFavoriteRecommendationsFromSnapshotPages(
+        cafeIds: [String],
+        cityId: String,
+        days: Int,
+        prefs: RecommendationPrefsPayload
+    ) async throws -> FavoritesRecommendationResponse? {
+        guard !cafeIds.isEmpty else {
+            return FavoritesRecommendationResponse(
+                cityID: cityId,
+                timezone: "Europe/Copenhagen",
+                dataStatus: .unavailable,
+                freshnessHours: nil,
+                providerUsed: "snapshot-pages",
+                fallbackUsed: true,
+                items: [],
+                generatedAtUTC: iso8601UTCString(Date())
+            )
+        }
+
+        let url = buildSnapshotPagesOutlookURL()
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200 ... 299).contains(http.statusCode) else {
+            return nil
+        }
+
+        let payload = try decoder.decode(PagesAreaSnapshotPayload.self, from: data)
+        let sortedSnapshots = payload.snapshots.sorted {
+            parseISODate($0.timeUTC) ?? .distantPast < parseISODate($1.timeUTC) ?? .distantPast
+        }
+        let maxHours = max(24, min(5, days) * 24)
+        let horizonSnapshots = Array(sortedSnapshots.prefix(maxHours))
+
+        var items: [FavoriteRecommendationItem] = []
+        for cafeID in cafeIds {
+            let requestedOsmID = parseOsmID(from: cafeID)
+            var cafeName = cafeID
+            let hourly = horizonSnapshots.compactMap { snapshot -> SunOutlookHourlyPoint? in
+                guard let row = matchSnapshotCafe(snapshot.cafes, cafeId: cafeID, requestedOsmID: requestedOsmID) else {
+                    return nil
+                }
+                if let rowName = row.name, !rowName.isEmpty {
+                    cafeName = rowName
+                }
+                let cloud = row.cloudCoverPct ?? snapshot.cloudCoverPct
+                let condition = canonicalCondition(
+                    rawCondition: nil,
+                    score: row.sunnyScore,
+                    cloudCoverPct: cloud,
+                    sunElevationDeg: row.sunElevationDeg
+                )
+                let hoursAhead = max(
+                    0.0,
+                    ((parseISODate(snapshot.timeUTC) ?? Date()).timeIntervalSince(Date())) / 3600.0
+                )
+                return SunOutlookHourlyPoint(
+                    timeUTC: snapshot.timeUTC,
+                    timeLocal: snapshot.timeLocal,
+                    timezone: "Europe/Copenhagen",
+                    condition: condition,
+                    score: row.sunnyScore,
+                    confidenceHint: confidenceHint(hoursAhead: hoursAhead),
+                    cloudCoverPct: cloud
+                )
+            }
+
+            guard !hourly.isEmpty else { continue }
+            let windows = mergeHourlyIntoWindows(hourly, minDuration: prefs.minDurationMin)
+            for window in windows {
+                items.append(
+                    buildRecommendationItem(
+                        cafeID: cafeID,
+                        cafeName: cafeName,
+                        window: window,
+                        preferredPeriods: prefs.preferredPeriods
+                    )
+                )
+            }
+        }
+
+        items.sort {
+            if $0.score == $1.score {
+                return $0.startUTC < $1.startUTC
+            }
+            return $0.score > $1.score
+        }
+
+        let generatedDate = payload.generatedAtUTC.flatMap(parseISODate)
+        let ageHours = generatedDate.map { max(0.0, Date().timeIntervalSince($0) / 3600.0) }
+        let status: RecommendationDataStatus = (ageHours ?? 0.0) <= freshTTLHours ? .fresh : .stale
+
+        return FavoritesRecommendationResponse(
+            cityID: cityId,
+            timezone: "Europe/Copenhagen",
+            dataStatus: status,
+            freshnessHours: ageHours,
+            providerUsed: "snapshot-pages",
+            fallbackUsed: true,
+            items: Array(items.prefix(20)),
+            generatedAtUTC: payload.generatedAtUTC ?? iso8601UTCString(Date())
+        )
+    }
+
+    private func buildRecommendationItem(
+        cafeID: String,
+        cafeName: String,
+        window: SunOutlookWindow,
+        preferredPeriods: [String]
+    ) -> FavoriteRecommendationItem {
+        let durationWeight = min(55.0, Double(window.durationMin) / 10.0)
+        let conditionWeight = window.condition.lowercased() == "sunny" ? 30.0 : 18.0
+        let startDate = parseISODate(window.startUTC) ?? Date()
+        let hoursAhead = max(0.0, startDate.timeIntervalSince(Date()) / 3600.0)
+        let soonnessWeight = max(0.0, 20.0 - (hoursAhead * 1.6))
+        let period = periodName(for: window.startLocal)
+        let preferred = Set(preferredPeriods.map { $0.lowercased() })
+        let preferredBonus = preferred.contains(period) ? 12.0 : 0.0
+        let score = min(100.0, max(0.0, durationWeight + conditionWeight + soonnessWeight + preferredBonus))
+
+        let reason: String
+        if preferred.contains(period) {
+            reason = "Long \(window.condition) window in your preferred \(period) period."
+        } else {
+            reason = "Best upcoming \(window.condition) window for this favorite."
+        }
+
+        return FavoriteRecommendationItem(
+            cafeID: cafeID,
+            cafeName: cafeName,
+            startUTC: window.startUTC,
+            endUTC: window.endUTC,
+            startLocal: window.startLocal,
+            endLocal: window.endLocal,
+            durationMin: window.durationMin,
+            condition: window.condition,
+            score: score,
+            reason: reason
+        )
+    }
+
+    private func periodName(for localISOTime: String) -> String {
+        guard let date = parseISODate(localISOTime) else { return "anytime" }
+        let hour = Calendar(identifier: .gregorian).component(.hour, from: date)
+        switch hour {
+        case 5 ..< 11: return "morning"
+        case 11 ..< 14: return "lunch"
+        case 14 ..< 18: return "afternoon"
+        case 18 ..< 23: return "evening"
+        default: return "night"
+        }
+    }
+
     private struct PagesMatchedPoint {
         let snapshot: PagesAreaSnapshot
         let cafe: PagesCafeRow
@@ -657,17 +861,62 @@ actor RecommendationService {
         }
     }
 
-    private func classifySnapshotCondition(sunnyFraction: Double, sunElevationDeg: Double) -> String {
-        if sunElevationDeg <= 0.0 {
+    private func normalizeHourlyPoints(_ hourly: [SunOutlookHourlyPoint]) -> [SunOutlookHourlyPoint] {
+        hourly.map { point in
+            let normalizedCondition = canonicalCondition(
+                rawCondition: point.condition,
+                score: point.score,
+                cloudCoverPct: point.cloudCoverPct,
+                sunElevationDeg: nil
+            )
+            guard normalizedCondition != point.condition else { return point }
+            return SunOutlookHourlyPoint(
+                timeUTC: point.timeUTC,
+                timeLocal: point.timeLocal,
+                timezone: point.timezone,
+                condition: normalizedCondition,
+                score: point.score,
+                confidenceHint: point.confidenceHint,
+                cloudCoverPct: point.cloudCoverPct
+            )
+        }
+    }
+
+    private func canonicalCondition(
+        rawCondition: String?,
+        score: Double,
+        cloudCoverPct: Double?,
+        sunElevationDeg: Double?
+    ) -> String {
+        if let sunElevationDeg, sunElevationDeg <= 0 {
             return "shaded"
         }
-        if sunnyFraction >= 0.99 {
+
+        let normalizedCloud = cloudCoverPct.map { max(0.0, min(100.0, $0)) }
+        if let normalizedCloud, normalizedCloud >= EffectiveCondition.heavyCloudOverrideThreshold {
+            return "shaded"
+        }
+
+        if score >= 55.0 {
             return "sunny"
         }
-        if sunnyFraction <= 0.01 {
-            return "shaded"
+        if score >= 20.0 {
+            return "partial"
         }
-        return "partial"
+
+        let normalizedRaw = rawCondition?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        if normalizedRaw == "sunny",
+           (normalizedCloud ?? 0.0) < 75.0 {
+            return "sunny"
+        }
+        if normalizedRaw == "partial" {
+            return "partial"
+        }
+
+        return "shaded"
     }
 
     private func confidenceHint(hoursAhead: Double) -> Double {
@@ -705,6 +954,7 @@ actor RecommendationService {
 
     private struct PagesCafeRow: Codable {
         let osmID: Int?
+        let name: String?
         let sunnyScore: Double
         let sunnyFraction: Double
         let sunElevationDeg: Double
@@ -712,6 +962,7 @@ actor RecommendationService {
 
         enum CodingKeys: String, CodingKey {
             case osmID = "osm_id"
+            case name
             case sunnyScore = "sunny_score"
             case sunnyFraction = "sunny_fraction"
             case sunElevationDeg = "sun_elevation_deg"
