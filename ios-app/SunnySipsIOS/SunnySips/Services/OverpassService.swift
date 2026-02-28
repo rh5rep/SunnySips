@@ -61,12 +61,19 @@ actor OverpassService {
 
     func fetchDetails(for cafe: SunnyCafe) async throws -> CafeExternalDetails {
         if let cached = try? loadCache(for: cafe.id), Date().timeIntervalSince(cached.createdAt) < AppConfig.overpassCacheTTL {
+            if let websiteURL = cached.details.websiteURL {
+                CafeLogoDomainStore.shared.registerWebsiteURL(websiteURL, forCafeName: cafe.name)
+            }
             return cached.details
         }
 
         let response = try await queryOverpass(for: cafe)
         guard let details = bestDetails(for: cafe, from: response.elements) else {
             throw OverpassError.noCandidate
+        }
+
+        if let websiteURL = details.websiteURL {
+            CafeLogoDomainStore.shared.registerWebsiteURL(websiteURL, forCafeName: cafe.name)
         }
 
         try? persistCache(CachedOverpassPayload(createdAt: Date(), details: details), for: cafe.id)

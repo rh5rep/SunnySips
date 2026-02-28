@@ -5,6 +5,7 @@ private enum ActiveSheet: Identifiable {
     case list
     case filters
     case favorites
+    case settings
     case forecastTime
     case detail(SunnyCafe)
 
@@ -13,6 +14,7 @@ private enum ActiveSheet: Identifiable {
         case .list: return "list"
         case .filters: return "filters"
         case .favorites: return "favorites"
+        case .settings: return "settings"
         case .forecastTime: return "forecast-time"
         case .detail(let cafe): return "detail-\(cafe.id)"
         }
@@ -50,6 +52,7 @@ struct ContentView: View {
                     region: $viewModel.mapRegion,
                     locateRequestID: viewModel.locateUserRequestID,
                     use3DMap: viewModel.use3DMap,
+                    mapDensity: viewModel.mapDensity,
                     effectiveCloudCover: viewModel.cloudCoverPct,
                     showCloudOverlay: viewModel.showCloudOverlay,
                     isNightMode: viewModel.isNightModeActive,
@@ -189,12 +192,15 @@ struct ContentView: View {
                         .presentationBackground(ThemeColor.surface)
                 case .favorites:
                     FavoritesView(
-                        cafes: viewModel.favoriteCafes,
-                        recommendations: viewModel.favoriteRecommendations,
+                        cafes: viewModel.favoriteCafesForDisplay,
+                        recommendations: viewModel.favoriteRecommendationsForDisplay,
                         recommendationStatus: viewModel.recommendationDataStatus,
                         recommendationFreshnessHours: viewModel.recommendationFreshnessHours,
                         recommendationProviderUsed: viewModel.recommendationProviderUsed,
                         recommendationError: viewModel.recommendationError,
+                        visibleFavoriteCount: viewModel.visibleFavoriteCount,
+                        totalFavoriteCount: viewModel.totalFavoriteCount,
+                        isFavoritesCapped: viewModel.isFavoritesSoftCapped,
                         onRefreshRecommendations: {
                             await viewModel.refreshFavoriteRecommendations()
                         },
@@ -207,6 +213,27 @@ struct ContentView: View {
                         }
                     )
                     .presentationDetents([.fraction(0.25), .medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(ThemeColor.surface)
+                case .settings:
+                    SettingsSheetView(
+                        theme: themeBinding,
+                        use3DMap: Binding(
+                            get: { viewModel.use3DMap },
+                            set: { viewModel.setMapStyle($0) }
+                        ),
+                        mapDensity: Binding(
+                            get: { viewModel.mapDensity },
+                            set: { viewModel.setMapDensity($0) }
+                        ),
+                        onReplayTutorial: {
+                            activeSheet = nil
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                showOnboarding = true
+                            }
+                        }
+                    )
+                    .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
                     .presentationBackground(ThemeColor.surface)
                 case .forecastTime:
@@ -253,6 +280,13 @@ struct ContentView: View {
                 Text("Enable location access in Settings to center on your position.")
             }
         }
+    }
+
+    private var themeBinding: Binding<AppTheme> {
+        Binding(
+            get: { theme },
+            set: { themeRawValue = $0.rawValue }
+        )
     }
 
     private var topFloatingBar: some View {
@@ -628,14 +662,9 @@ struct ContentView: View {
                 viewModel.requestLocateUser()
             }
 
-            mapControlButton(
-                systemName: viewModel.use3DMap ? "map" : "cube",
-                accessibility: viewModel.use3DMap ? "Switch to flat map" : "Switch to 3D map"
-            ) {
-                viewModel.toggleMapStyle()
+            mapControlButton(systemName: "gearshape", accessibility: "Open settings") {
+                presentSettings()
             }
-
-            mapThemeMenuButton
         }
     }
 
@@ -650,26 +679,6 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibility)
-    }
-
-    private var mapThemeMenuButton: some View {
-        Menu {
-            ForEach(AppTheme.allCases) { themeOption in
-                Button {
-                    themeRawValue = themeOption.rawValue
-                } label: {
-                    Label(themeOption.title, systemImage: themeOption.rawValue == themeRawValue ? "checkmark" : "circle")
-                }
-            }
-        } label: {
-            Image(systemName: "paintpalette")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(ThemeColor.coffeeDark)
-                .frame(width: 38, height: 38)
-                .background(ThemeColor.surface.opacity(0.95), in: Circle())
-                .overlay(Circle().stroke(ThemeColor.line.opacity(0.55), lineWidth: 1))
-        }
-        .accessibilityLabel("Choose app appearance")
     }
 
     private func headerIconButton(systemName: String, accessibility: String, action: @escaping () -> Void) -> some View {
@@ -903,6 +912,7 @@ struct ContentView: View {
                 region: $viewModel.mapRegion,
                 locateRequestID: viewModel.locateUserRequestID,
                 use3DMap: viewModel.use3DMap,
+                mapDensity: viewModel.mapDensity,
                 effectiveCloudCover: viewModel.cloudCoverPct,
                 showCloudOverlay: viewModel.showCloudOverlay,
                 isNightMode: viewModel.isNightModeActive,
@@ -928,12 +938,6 @@ struct ContentView: View {
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
-                        viewModel.toggleMapStyle()
-                    } label: {
-                        Image(systemName: viewModel.use3DMap ? "map" : "cube")
-                    }
-
-                    Button {
                         viewModel.requestLocateUser()
                     } label: {
                         Image(systemName: "location.fill")
@@ -945,6 +949,15 @@ struct ContentView: View {
                         }
                     } label: {
                         Image(systemName: "list.bullet")
+                    }
+
+                    Button {
+                        viewModel.isFullMapPresented = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            presentSettings()
+                        }
+                    } label: {
+                        Image(systemName: "gearshape")
                     }
                 }
             }
@@ -969,6 +982,11 @@ struct ContentView: View {
     private func presentFavorites() {
         viewModel.selectedCafe = nil
         activeSheet = .favorites
+    }
+
+    private func presentSettings() {
+        viewModel.selectedCafe = nil
+        activeSheet = .settings
     }
 
     private func presentFullMap() {

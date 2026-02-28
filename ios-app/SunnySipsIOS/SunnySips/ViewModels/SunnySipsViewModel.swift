@@ -33,6 +33,9 @@ final class SunnySipsViewModel: ObservableObject {
     @Published private(set) var recommendationFreshnessHours: Double?
     @Published private(set) var recommendationProviderUsed: String?
     @Published private(set) var recommendationError: String?
+    @Published private(set) var visibleFavoriteCafeIDs: Set<String> = []
+    @Published private(set) var isFavoritesSoftCapped = false
+    @Published private(set) var favoritesSoftCapLimit = 15
 
     @Published var selectedCafe: SunnyCafe?
     @Published var mapRegion: MKCoordinateRegion = SunnyArea.coreCopenhagen.bbox.region
@@ -46,7 +49,16 @@ final class SunnySipsViewModel: ObservableObject {
     @Published var showLocationSettingsPrompt = false
     @Published var errorMessage: String?
     @Published var warningMessage: String?
-    @Published var use3DMap = false
+    @Published var use3DMap = false {
+        didSet {
+            UserDefaults.standard.set(use3DMap, forKey: mapStyleDefaultsKey)
+        }
+    }
+    @Published var mapDensity: MapDensity = .balanced {
+        didSet {
+            UserDefaults.standard.set(mapDensity.rawValue, forKey: mapDensityDefaultsKey)
+        }
+    }
 
     @Published var locateUserRequestID = 0
 
@@ -60,8 +72,16 @@ final class SunnySipsViewModel: ObservableObject {
     private var recommendationTask: Task<Void, Never>?
 
     private let favoritesDefaultsKey = "sunnysips.favoriteCafeIDs"
+    private let mapStyleDefaultsKey = "sunnysips.use3DMap"
+    private let mapDensityDefaultsKey = "sunnysips.mapDensity"
     private let copenhagenTimeZone = TimeZone(identifier: "Europe/Copenhagen") ?? .current
     private let sunsetTransitionDuration: TimeInterval = 45 * 60
+
+    init() {
+        let defaults = UserDefaults.standard
+        use3DMap = defaults.bool(forKey: mapStyleDefaultsKey)
+        mapDensity = MapDensity(rawValue: defaults.string(forKey: mapDensityDefaultsKey) ?? "") ?? .balanced
+    }
 
     var areaTitle: String { filters.area.title }
     var quickJumpMinutes: [Int] { [30, 60, 120, 180, 360] }
@@ -219,6 +239,27 @@ final class SunnySipsViewModel: ObservableObject {
         allCafes
             .filter { favoriteCafeIDs.contains($0.id) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var totalFavoriteCount: Int {
+        favoriteCafeIDs.count
+    }
+
+    var visibleFavoriteCount: Int {
+        min(favoritesSoftCapLimit, totalFavoriteCount)
+    }
+
+    var favoriteCafesForDisplay: [SunnyCafe] {
+        let order = rankedFavoriteCafeIDs()
+        let visible = Array(order.prefix(favoritesSoftCapLimit))
+        let byID = Dictionary(uniqueKeysWithValues: allCafes.map { ($0.id, $0) })
+        return visible.compactMap { byID[$0] }
+    }
+
+    var favoriteRecommendationsForDisplay: [FavoriteRecommendationItem] {
+        favoriteRecommendations
+            .filter { visibleFavoriteCafeIDs.contains($0.cafeID) }
+            .sorted(by: recommendationSort)
     }
 
     var recommendationPrefsPayload: RecommendationPrefsPayload {
@@ -436,6 +477,7 @@ final class SunnySipsViewModel: ObservableObject {
             recommendationDataStatus = .unavailable
             recommendationFreshnessHours = nil
             recommendationProviderUsed = nil
+            recalculateVisibleFavoritesScope()
             return
         }
         do {
@@ -450,6 +492,7 @@ final class SunnySipsViewModel: ObservableObject {
             recommendationDataStatus = response.dataStatus
             recommendationFreshnessHours = response.freshnessHours
             recommendationProviderUsed = response.providerUsed
+            recalculateVisibleFavoritesScope()
         } catch {
             print("[SunnySipsVM] recommendations error=\(error.localizedDescription)")
             recommendationError = error.localizedDescription
@@ -463,11 +506,20 @@ final class SunnySipsViewModel: ObservableObject {
                 recommendationFreshnessHours = previousFreshness
                 recommendationProviderUsed = previousProvider
             }
+            recalculateVisibleFavoritesScope()
         }
     }
 
     func toggleMapStyle() {
         use3DMap.toggle()
+    }
+
+    func setMapStyle(_ isEnabled: Bool) {
+        use3DMap = isEnabled
+    }
+
+    func setMapDensity(_ density: MapDensity) {
+        mapDensity = density
     }
 
     func applyQuickPreset(_ preset: SunnyQuickPreset) {
@@ -632,6 +684,7 @@ final class SunnySipsViewModel: ObservableObject {
         cafes = filtered
         visibleCafes = cafes.filter { visibleRegion.contains($0.coordinate) }
         stats = summarize(allCafes)
+        recalculateVisibleFavoritesScope()
 
         if let selectedCafe, !cafes.contains(selectedCafe) {
             self.selectedCafe = nil
@@ -694,9 +747,11 @@ final class SunnySipsViewModel: ObservableObject {
               let ids = try? JSONDecoder().decode([String].self, from: data)
         else {
             favoriteCafeIDs = []
+            recalculateVisibleFavoritesScope()
             return
         }
         favoriteCafeIDs = Set(ids)
+        recalculateVisibleFavoritesScope()
     }
 
     private func persistFavoritesToDefaults() {
@@ -705,6 +760,86 @@ final class SunnySipsViewModel: ObservableObject {
         if let data = try? JSONEncoder().encode(ids) {
             defaults.set(data, forKey: favoritesDefaultsKey)
         }
+    }
+
+    private func recalculateVisibleFavoritesScope() {
+        let ranked = rankedFavoriteCafeIDs()
+        let visibleIDs = Set(ranked.prefix(favoritesSoftCapLimit))
+        visibleFavoriteCafeIDs = visibleIDs
+        isFavoritesSoftCapped = ranked.count > favoritesSoftCapLimit
+    }
+
+    func rankedFavoriteCafesForDisplay() -> [SunnyCafe] {
+        favoriteCafesForDisplay
+    }
+
+    private func rankedFavoriteCafeIDs() -> [String] {
+        let favoriteIDs = Array(favoriteCafeIDs)
+        guard !favoriteIDs.isEmpty else { return [] }
+
+        struct RecRank {
+            let score: Double
+            let startDate: Date
+        }
+
+        var recBestByCafe: [String: RecRank] = [:]
+        for rec in favoriteRecommendations {
+            let start = parseISODate(rec.startUTC) ?? .distantFuture
+            let candidate = RecRank(score: rec.score, startDate: start)
+            if let existing = recBestByCafe[rec.cafeID] {
+                if candidate.score > existing.score ||
+                    (candidate.score == existing.score && candidate.startDate < existing.startDate) {
+                    recBestByCafe[rec.cafeID] = candidate
+                }
+            } else {
+                recBestByCafe[rec.cafeID] = candidate
+            }
+        }
+
+        let cafeNameByID = buildCafeNameIndex()
+
+        let withRecommendations = favoriteIDs
+            .filter { recBestByCafe[$0] != nil }
+            .sorted { lhs, rhs in
+                guard let left = recBestByCafe[lhs], let right = recBestByCafe[rhs] else { return lhs < rhs }
+                if left.score != right.score { return left.score > right.score }
+                if left.startDate != right.startDate { return left.startDate < right.startDate }
+                return (cafeNameByID[lhs] ?? lhs).localizedCaseInsensitiveCompare(cafeNameByID[rhs] ?? rhs) == .orderedAscending
+            }
+
+        let withoutRecommendations = favoriteIDs
+            .filter { recBestByCafe[$0] == nil }
+            .sorted {
+                (cafeNameByID[$0] ?? $0).localizedCaseInsensitiveCompare(cafeNameByID[$1] ?? $1) == .orderedAscending
+            }
+
+        return withRecommendations + withoutRecommendations
+    }
+
+    private func buildCafeNameIndex() -> [String: String] {
+        var nameByID: [String: String] = [:]
+        for cafe in allCafes {
+            nameByID[cafe.id] = cafe.name
+        }
+        for rec in favoriteRecommendations where !rec.cafeName.isEmpty {
+            if nameByID[rec.cafeID] == nil {
+                nameByID[rec.cafeID] = rec.cafeName
+            }
+        }
+        return nameByID
+    }
+
+    private func recommendationSort(_ lhs: FavoriteRecommendationItem, _ rhs: FavoriteRecommendationItem) -> Bool {
+        let leftDate = parseISODate(lhs.startUTC) ?? .distantFuture
+        let rightDate = parseISODate(rhs.startUTC) ?? .distantFuture
+        if leftDate != rightDate { return leftDate < rightDate }
+        if lhs.score != rhs.score { return lhs.score > rhs.score }
+        return lhs.cafeName.localizedCaseInsensitiveCompare(rhs.cafeName) == .orderedAscending
+    }
+
+    private func parseISODate(_ raw: String) -> Date? {
+        ISO8601DateFormatter.withFractionalSeconds.date(from: raw)
+            ?? ISO8601DateFormatter.internetDateTime.date(from: raw)
     }
 
     private var selectedTargetTime: Date {

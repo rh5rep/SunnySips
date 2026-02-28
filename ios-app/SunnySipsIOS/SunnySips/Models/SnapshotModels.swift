@@ -584,3 +584,117 @@ extension ISO8601DateFormatter {
         return formatter
     }()
 }
+
+enum CafeLogoResolver {
+    private static let exactDomainByName: [String: String] = [
+        "starbucks": "starbucks.com",
+        "espresso house": "espressohouse.com",
+        "espresso hourse": "espressohouse.com",
+        "joe the juice": "joejuice.com",
+        "coffee collective": "coffeecollective.dk",
+        "copenhagen coffee lab": "copenhagencoffeelab.com",
+        "la cabra": "lacabra.com",
+        "prolog": "prologcoffee.com",
+        "democratic coffee": "democratic.coffee",
+        "original coffee": "originalcoffee.dk",
+        "joe and the juice": "joejuice.com",
+        "lagkagehuset": "lagkagehuset.dk",
+        "emmerys": "emmerys.dk",
+        "atelier september": "atelierseptember.dk",
+        "andersen maillard": "andersenmaillard.dk",
+        "andersen og maillard": "andersenmaillard.dk",
+        "bastard cafe": "bastardcafe.dk",
+        "cafe vivaldi": "cafevivaldi.dk",
+        "vivaldi axelborg": "cafevivaldi.dk",
+        "mad kaffe": "madogkaffe.dk",
+        "mad og kaffe": "madogkaffe.dk",
+        "sonny": "sonnycph.dk",
+        "hart": "hartbageri.dk",
+        "next door cafe": "nextdoorcafe.dk",
+        "biscoff cph": "biscoffcph.dk",
+        "paludan": "paludans.dk",
+        "7 eleven": "7-eleven.dk",
+        "7eleven": "7-eleven.dk",
+    ]
+
+    static func logoURL(forCafeName cafeName: String) -> URL? {
+        logoURLCandidates(forCafeName: cafeName).first
+    }
+
+    static func logoURLCandidates(forCafeName cafeName: String) -> [URL] {
+        guard let domain = domain(forCafeName: cafeName) else { return [] }
+        let encodedDomain = domain.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? domain
+        return [
+            URL(string: "https://www.google.com/s2/favicons?domain=\(encodedDomain)&sz=64"),
+            URL(string: "https://logo.clearbit.com/\(encodedDomain)?size=64"),
+        ]
+        .compactMap { $0 }
+    }
+
+    private static func domain(forCafeName cafeName: String) -> String? {
+        let normalized = cafeName.normalizedForSearch
+        guard !normalized.isEmpty else { return nil }
+        if let learned = CafeLogoDomainStore.shared.domain(forCafeName: cafeName) {
+            return learned
+        }
+        if let exact = exactDomainByName[normalized] {
+            return exact
+        }
+        if let partial = exactDomainByName.first(where: { normalized.contains($0.key) })?.value {
+            return partial
+        }
+        return nil
+    }
+}
+
+final class CafeLogoDomainStore {
+    static let shared = CafeLogoDomainStore()
+
+    private let defaultsKey = "sunnysips.cafeLogoDomains"
+    private let queue = DispatchQueue(label: "sunnysips.logo-domain-store")
+    private var domainsByNormalizedName: [String: String]
+
+    private init() {
+        domainsByNormalizedName = (UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String]) ?? [:]
+    }
+
+    func domain(forCafeName cafeName: String) -> String? {
+        let key = cafeName.normalizedForSearch
+        guard !key.isEmpty else { return nil }
+        return queue.sync {
+            domainsByNormalizedName[key]
+        }
+    }
+
+    func registerWebsiteURL(_ websiteURL: URL, forCafeName cafeName: String) {
+        guard let host = websiteURL.host else { return }
+        registerDomain(host, forCafeName: cafeName)
+    }
+
+    func registerDomain(_ domain: String, forCafeName cafeName: String) {
+        let key = cafeName.normalizedForSearch
+        guard !key.isEmpty else { return }
+        guard let normalizedDomain = Self.normalizeDomain(domain) else { return }
+
+        queue.sync {
+            let existing = domainsByNormalizedName[key]
+            guard existing != normalizedDomain else { return }
+            domainsByNormalizedName[key] = normalizedDomain
+            UserDefaults.standard.set(domainsByNormalizedName, forKey: defaultsKey)
+        }
+    }
+
+    private static func normalizeDomain(_ raw: String) -> String? {
+        let trimmed = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "^https?://", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "^www\\.", with: "", options: .regularExpression)
+            .split(separator: "/")
+            .first
+            .map(String.init)
+
+        guard let trimmed, trimmed.contains(".") else { return nil }
+        return trimmed
+    }
+}

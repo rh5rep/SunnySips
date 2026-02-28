@@ -9,6 +9,7 @@ struct CafeMapView: UIViewRepresentable {
     @Binding var region: MKCoordinateRegion
     let locateRequestID: Int
     let use3DMap: Bool
+    let mapDensity: MapDensity
     let effectiveCloudCover: Double
     let showCloudOverlay: Bool
     let isNightMode: Bool
@@ -41,6 +42,8 @@ struct CafeMapView: UIViewRepresentable {
         mapView.isPitchEnabled = use3DMap
         mapView.setRegion(region, animated: false)
         context.coordinator.applyAnnotations(to: mapView, cafes: cafes, around: region)
+        context.coordinator.lastRenderedCafeSignature = context.coordinator.cafeSignature(cafes)
+        context.coordinator.lastScheduledRegion = region
         context.coordinator.updateCloudOverlay(on: mapView)
         return mapView
     }
@@ -48,7 +51,22 @@ struct CafeMapView: UIViewRepresentable {
     func updateUIView(_ mapView: MKMapView, context: Context) {
         context.coordinator.parent = self
         let renderRegion = mapView.region.approximatelyEquals(region) ? mapView.region : region
-        context.coordinator.applyAnnotations(to: mapView, cafes: cafes, around: renderRegion)
+        let cafeSignature = context.coordinator.cafeSignature(cafes)
+        let cafesChanged = cafeSignature != context.coordinator.lastRenderedCafeSignature
+        let densityChanged = context.coordinator.lastRenderedMapDensity != mapDensity
+        let mapStyleChanged = context.coordinator.lastRenderedUse3DMap != use3DMap
+        let regionChanged = context.coordinator.shouldRefreshAnnotations(
+            from: context.coordinator.lastScheduledRegion,
+            to: renderRegion
+        )
+        if cafesChanged || densityChanged || mapStyleChanged || regionChanged {
+            context.coordinator.scheduleAnnotationRefresh(
+                on: mapView,
+                cafes: cafes,
+                around: renderRegion,
+                debounce: (cafesChanged || densityChanged || mapStyleChanged) ? 0.0 : 0.12
+            )
+        }
 
         if locateRequestID != context.coordinator.lastLocateRequestID {
             context.coordinator.lastLocateRequestID = locateRequestID
@@ -84,6 +102,11 @@ struct CafeMapView: UIViewRepresentable {
         var last3DState = false
         var cloudOverlay: MKPolygon?
         var cloudOverlayRenderer: MKPolygonRenderer?
+        var lastRenderedCafeSignature: Int?
+        var lastScheduledRegion: MKCoordinateRegion?
+        var lastRenderedMapDensity: MapDensity?
+        var lastRenderedUse3DMap: Bool?
+        private var annotationRefreshTask: DispatchWorkItem?
 
         private let locationManager = CLLocationManager()
         private var lastLocationRequestAt: Date?
@@ -96,11 +119,12 @@ struct CafeMapView: UIViewRepresentable {
         }
 
         func applyAnnotations(to mapView: MKMapView, cafes: [SunnyCafe], around region: MKCoordinateRegion) {
-            let visibleCafes = cafesNear(region: region, within: cafes)
+            let selectedCafeID = parent.selectedCafe?.id
+            let visibleCafes = cafesNear(region: region, within: cafes, selectedCafeID: selectedCafeID)
             let incomingIDs = Set(visibleCafes.map(\.id))
-            var toRemove: [CafePointAnnotation] = []
             let userCoordinate = mapView.userLocation.location?.coordinate
             let isDimmed = parent.warningMessage != nil || parent.isNightMode || parent.sunsetTransitionProgress > 0
+            var toRemove: [CafePointAnnotation] = []
 
             for (id, existing) in annotationsByID where !incomingIDs.contains(id) {
                 toRemove.append(existing)
@@ -118,9 +142,11 @@ struct CafeMapView: UIViewRepresentable {
                     cloudCover: cafe.cloudCoverPct ?? parent.effectiveCloudCover
                 )
                 if let existing = annotationsByID[cafe.id] {
-                    existing.update(with: cafe, condition: condition, distanceMeters: distance)
-                    if let view = mapView.view(for: existing) as? CafeAnnotationView {
-                        view.apply(cafe: cafe, condition: condition, isDimmed: isDimmed)
+                    if existing.cafe != cafe || existing.condition != condition {
+                        existing.update(with: cafe, condition: condition, distanceMeters: distance)
+                        if let view = mapView.view(for: existing) as? CafeAnnotationView {
+                            view.apply(cafe: cafe, condition: condition, isDimmed: isDimmed)
+                        }
                     }
                 } else {
                     let annotation = CafePointAnnotation(cafe: cafe, condition: condition, distanceMeters: distance)
@@ -132,12 +158,141 @@ struct CafeMapView: UIViewRepresentable {
             if !toAdd.isEmpty {
                 mapView.addAnnotations(toAdd)
             }
+            lastRenderedMapDensity = parent.mapDensity
+            lastRenderedUse3DMap = parent.use3DMap
         }
 
-        private func cafesNear(region: MKCoordinateRegion, within cafes: [SunnyCafe]) -> [SunnyCafe] {
+        func scheduleAnnotationRefresh(
+            on mapView: MKMapView,
+            cafes: [SunnyCafe],
+            around region: MKCoordinateRegion,
+            debounce delay: TimeInterval
+        ) {
+            annotationRefreshTask?.cancel()
+            lastScheduledRegion = region
+
+            let task = DispatchWorkItem { [weak self, weak mapView] in
+                guard let self, let mapView else { return }
+                self.applyAnnotations(to: mapView, cafes: cafes, around: region)
+                self.lastRenderedCafeSignature = self.cafeSignature(cafes)
+                self.lastRenderedMapDensity = self.parent.mapDensity
+                self.lastRenderedUse3DMap = self.parent.use3DMap
+            }
+            annotationRefreshTask = task
+
+            if delay <= 0 {
+                DispatchQueue.main.async(execute: task)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: task)
+            }
+        }
+
+        func cafeSignature(_ cafes: [SunnyCafe]) -> Int {
+            var hasher = Hasher()
+            hasher.combine(cafes.count)
+            for cafe in cafes {
+                hasher.combine(cafe.id)
+                hasher.combine(Int((cafe.sunnyScore * 10.0).rounded()))
+                hasher.combine(Int(((cafe.cloudCoverPct ?? -1) * 10.0).rounded()))
+            }
+            return hasher.finalize()
+        }
+
+        private func cafesNear(region: MKCoordinateRegion, within cafes: [SunnyCafe], selectedCafeID: String?) -> [SunnyCafe] {
+            let nearby = cafesAround(region: region, within: cafes, bufferScale: annotationBufferScale(for: region))
+            let budget = annotationRenderBudget(for: region)
+            guard nearby.count > budget else { return nearby }
+
+            var limited = distributedSelection(
+                from: nearby,
+                budget: budget,
+                in: region,
+                persistedIDs: Set(annotationsByID.keys)
+            )
+            if let selectedCafeID,
+               !limited.contains(where: { $0.id == selectedCafeID }),
+               let selected = nearby.first(where: { $0.id == selectedCafeID }) {
+                if limited.isEmpty {
+                    limited = [selected]
+                } else {
+                    limited[limited.count - 1] = selected
+                }
+            }
+            return limited
+        }
+
+        private func distributedSelection(
+            from cafes: [SunnyCafe],
+            budget: Int,
+            in region: MKCoordinateRegion,
+            persistedIDs: Set<String>
+        ) -> [SunnyCafe] {
+            guard budget > 0, !cafes.isEmpty else { return [] }
+
+            let aspect = max(0.7, min(1.8, region.span.longitudeDelta / max(region.span.latitudeDelta, 0.0001)))
+            let approxRows = max(3, Int((sqrt(Double(max(budget, 1)) / aspect)).rounded()))
+            let rows = min(12, approxRows)
+            let cols = min(16, max(3, Int((Double(rows) * aspect).rounded())))
+
+            let latMin = region.center.latitude - (region.span.latitudeDelta * 0.5) - max(region.span.latitudeDelta * 0.8, 0.01)
+            let latMax = region.center.latitude + (region.span.latitudeDelta * 0.5) + max(region.span.latitudeDelta * 0.8, 0.01)
+            let lonMin = region.center.longitude - (region.span.longitudeDelta * 0.5) - max(region.span.longitudeDelta * 0.8, 0.01)
+            let lonMax = region.center.longitude + (region.span.longitudeDelta * 0.5) + max(region.span.longitudeDelta * 0.8, 0.01)
+            let latRange = max(0.0001, latMax - latMin)
+            let lonRange = max(0.0001, lonMax - lonMin)
+
+            var buckets: [Int: [SunnyCafe]] = [:]
+            for cafe in cafes {
+                let latNorm = max(0.0, min(0.9999, (cafe.lat - latMin) / latRange))
+                let lonNorm = max(0.0, min(0.9999, (cafe.lon - lonMin) / lonRange))
+                let row = max(0, min(rows - 1, Int(latNorm * Double(rows))))
+                let col = max(0, min(cols - 1, Int(lonNorm * Double(cols))))
+                let key = (row * cols) + col
+                buckets[key, default: []].append(cafe)
+            }
+
+            let orderedKeys = buckets.keys.sorted()
+            for key in orderedKeys {
+                buckets[key]?.sort { lhs, rhs in
+                    bucketSort(lhs, rhs, persistedIDs: persistedIDs)
+                }
+            }
+
+            var result: [SunnyCafe] = []
+            var nextIndexByKey: [Int: Int] = [:]
+
+            for key in orderedKeys {
+                guard let bucket = buckets[key], !bucket.isEmpty else { continue }
+                result.append(bucket[0])
+                nextIndexByKey[key] = 1
+                if result.count == budget {
+                    return result
+                }
+            }
+
+            var advanced = true
+            while result.count < budget && advanced {
+                advanced = false
+                for key in orderedKeys {
+                    guard let bucket = buckets[key] else { continue }
+                    let index = nextIndexByKey[key] ?? 0
+                    guard index < bucket.count else { continue }
+                    result.append(bucket[index])
+                    nextIndexByKey[key] = index + 1
+                    advanced = true
+                    if result.count == budget {
+                        break
+                    }
+                }
+            }
+
+            return result
+        }
+
+        private func cafesAround(region: MKCoordinateRegion, within cafes: [SunnyCafe], bufferScale: Double) -> [SunnyCafe] {
             // Keep a small buffer around the viewport so panning feels smooth without rendering the full dataset.
-            let latitudeBuffer = max(region.span.latitudeDelta * 0.8, 0.01)
-            let longitudeBuffer = max(region.span.longitudeDelta * 0.8, 0.01)
+            let latitudeBuffer = max(region.span.latitudeDelta * bufferScale, 0.01)
+            let longitudeBuffer = max(region.span.longitudeDelta * bufferScale, 0.01)
 
             let minLat = region.center.latitude - (region.span.latitudeDelta * 0.5) - latitudeBuffer
             let maxLat = region.center.latitude + (region.span.latitudeDelta * 0.5) + latitudeBuffer
@@ -149,6 +304,79 @@ struct CafeMapView: UIViewRepresentable {
                 return coordinate.latitude >= minLat && coordinate.latitude <= maxLat &&
                     coordinate.longitude >= minLon && coordinate.longitude <= maxLon
             }
+        }
+
+        func shouldRefreshAnnotations(from previous: MKCoordinateRegion?, to next: MKCoordinateRegion) -> Bool {
+            guard let previous else { return true }
+
+            let latitudeShift = abs(next.center.latitude - previous.center.latitude)
+            let longitudeShift = abs(next.center.longitude - previous.center.longitude)
+            let latitudeThreshold = max(previous.span.latitudeDelta * 0.18, 0.0018)
+            let longitudeThreshold = max(previous.span.longitudeDelta * 0.18, 0.0018)
+
+            let previousZoom = max(previous.span.latitudeDelta, previous.span.longitudeDelta)
+            let nextZoom = max(next.span.latitudeDelta, next.span.longitudeDelta)
+            let zoomRatio = max(
+                nextZoom / max(previousZoom, 0.0001),
+                previousZoom / max(nextZoom, 0.0001)
+            )
+
+            return latitudeShift > latitudeThreshold ||
+                longitudeShift > longitudeThreshold ||
+                zoomRatio > 1.12
+        }
+
+        private func annotationRenderBudget(for region: MKCoordinateRegion) -> Int {
+            let zoomMetric = max(region.span.latitudeDelta, region.span.longitudeDelta)
+            let baseBudget: Int
+            if zoomMetric > 0.11 {
+                baseBudget = 220
+            } else if zoomMetric > 0.07 {
+                baseBudget = 280
+            } else if zoomMetric > 0.035 {
+                baseBudget = 360
+            } else {
+                baseBudget = 430
+            }
+            let densityAdjusted = max(60, Int(Double(baseBudget) * parent.mapDensity.annotationBudgetMultiplier))
+            if parent.use3DMap {
+                return max(45, Int(Double(densityAdjusted) * 0.72))
+            }
+            return densityAdjusted
+        }
+
+        private func annotationBufferScale(for region: MKCoordinateRegion) -> Double {
+            let zoomMetric = max(region.span.latitudeDelta, region.span.longitudeDelta)
+            let baseScale: Double
+            if zoomMetric > 0.11 {
+                baseScale = 1.45
+            } else if zoomMetric > 0.07 {
+                baseScale = 1.25
+            } else if zoomMetric > 0.035 {
+                baseScale = 1.05
+            } else {
+                baseScale = 0.82
+            }
+            switch parent.mapDensity {
+            case .focused:
+                return max(0.72, baseScale - 0.12)
+            case .balanced:
+                return baseScale
+            case .dense:
+                return baseScale + 0.18
+            }
+        }
+
+        private func bucketSort(_ lhs: SunnyCafe, _ rhs: SunnyCafe, persistedIDs: Set<String>) -> Bool {
+            let leftPersisted = persistedIDs.contains(lhs.id)
+            let rightPersisted = persistedIDs.contains(rhs.id)
+            if leftPersisted != rightPersisted {
+                return leftPersisted
+            }
+            if lhs.sunnyScore != rhs.sunnyScore {
+                return lhs.sunnyScore > rhs.sunnyScore
+            }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
 
         func centerOnUser(in mapView: MKMapView) {
@@ -242,8 +470,13 @@ struct CafeMapView: UIViewRepresentable {
 
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
             if let cluster = view.annotation as? MKClusterAnnotation {
-                let rect = cluster.memberAnnotations.reduce(MKMapRect.null) { partial, ann in
-                    partial.union(MKMapRect(origin: MKMapPoint(ann.coordinate), size: MKMapSize(width: 0, height: 0)))
+                let rect = cluster.memberAnnotations.reduce(MKMapRect.null) { partial, annotation in
+                    partial.union(
+                        MKMapRect(
+                            origin: MKMapPoint(annotation.coordinate),
+                            size: MKMapSize(width: 0, height: 0)
+                        )
+                    )
                 }
                 mapView.setVisibleMapRect(
                     rect,
@@ -273,7 +506,14 @@ struct CafeMapView: UIViewRepresentable {
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             updateCloudOverlay(on: mapView)
-            applyAnnotations(to: mapView, cafes: parent.cafes, around: mapView.region)
+            if shouldRefreshAnnotations(from: lastScheduledRegion, to: mapView.region) {
+                scheduleAnnotationRefresh(
+                    on: mapView,
+                    cafes: parent.cafes,
+                    around: mapView.region,
+                    debounce: 0.08
+                )
+            }
 
             let region = mapView.region
             let wasProgrammatic = isProgrammaticRegionChange
@@ -519,7 +759,7 @@ final class CafeAnnotationView: MKAnnotationView {
         bubbleView.layer.borderWidth = 1.1
         bubbleView.layer.borderColor = UIColor.white.withAlphaComponent(0.32).cgColor
         bubbleView.layer.shadowColor = UIColor.black.cgColor
-        bubbleView.layer.shadowOpacity = isSelected ? 0.26 : 0.18
+        bubbleView.layer.shadowOpacity = isSelected ? 0.24 : 0.16
         bubbleView.layer.shadowRadius = isSelected ? 3 : 2
         bubbleView.layer.shadowOffset = CGSize(width: 0, height: 1)
 
@@ -535,22 +775,24 @@ final class CafeClusterAnnotationView: MKAnnotationView {
     static let reuseIdentifier = "CafeClusterAnnotationView"
 
     private let label = UILabel()
+    private static let size: CGFloat = 34
 
     override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
-        frame = CGRect(x: 0, y: 0, width: 38, height: 38)
-        layer.cornerRadius = 19
-        layer.backgroundColor = UIColor.black.withAlphaComponent(0.64).cgColor
-        layer.borderWidth = 1.5
-        layer.borderColor = UIColor.white.withAlphaComponent(0.85).cgColor
+        frame = CGRect(x: 0, y: 0, width: Self.size, height: Self.size)
+        bounds = frame
+        layer.cornerRadius = Self.size / 2.0
         layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.25
         layer.shadowOffset = CGSize(width: 0, height: 2)
+        layer.shadowOpacity = 0.2
         layer.shadowRadius = 3
+        backgroundColor = UIColor(red: 0.16, green: 0.13, blue: 0.11, alpha: 0.76)
+        layer.borderWidth = 1.2
+        layer.borderColor = UIColor.white.withAlphaComponent(0.7).cgColor
 
         label.frame = bounds
         label.textAlignment = .center
-        label.font = UIFont.systemFont(ofSize: 14, weight: .bold)
+        label.font = UIFont.systemFont(ofSize: 13, weight: .bold)
         label.textColor = .white
         label.layer.shadowColor = UIColor.black.cgColor
         label.layer.shadowOpacity = 0.45
@@ -568,6 +810,7 @@ final class CafeClusterAnnotationView: MKAnnotationView {
 
     func configure(count: Int) {
         label.text = "\(count)"
+        alpha = 0.92
         accessibilityLabel = "\(count) cafes clustered"
     }
 }

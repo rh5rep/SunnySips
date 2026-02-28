@@ -24,6 +24,38 @@ enum AppTheme: String, CaseIterable, Identifiable {
     }
 }
 
+enum MapDensity: String, CaseIterable, Identifiable {
+    case focused
+    case balanced
+    case dense
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .focused: return "Focused"
+        case .balanced: return "Balanced"
+        case .dense: return "Dense"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .focused: return "Fewer map markers, calmer view"
+        case .balanced: return "Default mix of coverage and clarity"
+        case .dense: return "Show more cafes at each zoom level"
+        }
+    }
+
+    var annotationBudgetMultiplier: Double {
+        switch self {
+        case .focused: return 0.78
+        case .balanced: return 1.0
+        case .dense: return 1.28
+        }
+    }
+}
+
 enum ThemeColor {
     static let bg = Color(dynamicLight: "#F3ECE2", dark: "#111111")
     static let surface = Color(dynamicLight: "#FBF6EE", dark: "#1A1A1A")
