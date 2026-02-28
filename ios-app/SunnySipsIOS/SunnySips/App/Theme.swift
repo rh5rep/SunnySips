@@ -57,25 +57,25 @@ enum MapDensity: String, CaseIterable, Identifiable {
 }
 
 enum ThemeColor {
-    static let bg = Color(dynamicLight: "#F3ECE2", dark: "#111111")
-    static let surface = Color(dynamicLight: "#FBF6EE", dark: "#1A1A1A")
-    static let surfaceSoft = Color(dynamicLight: "#ECE1D2", dark: "#25201B")
+    static let bg = Color(dynamicLight: "#F2E9DE", dark: "#17120F")
+    static let surface = Color(dynamicLight: "#FBF5EC", dark: "#1F1915")
+    static let surfaceSoft = Color(dynamicLight: "#E7DACB", dark: "#2A211C")
 
-    static let coffee = Color(dynamicLight: "#8B725C", dark: "#BFA58E")
-    static let coffeeDark = Color(dynamicLight: "#5A4738", dark: "#E8D7C4")
-    static let sun = Color(dynamicLight: "#E1C46F", dark: "#F0D586")
-    static let sunBright = Color(dynamicLight: "#F0D78F", dark: "#FFE3A7")
+    static let coffee = Color(dynamicLight: "#9A6A52", dark: "#C89F83")
+    static let coffeeDark = Color(dynamicLight: "#5C3D2E", dark: "#F0E2D4")
+    static let sun = Color(dynamicLight: "#D7B071", dark: "#E6C38E")
+    static let sunBright = Color(dynamicLight: "#EACB95", dark: "#F4D7A8")
 
-    static let ink = Color(dynamicLight: "#2F2A25", dark: "#F5F1E8")
-    static let muted = Color(dynamicLight: "#796A5C", dark: "#B8AA9A")
-    static let line = Color(dynamicLight: "#D4C3AD", dark: "#3A322B")
+    static let ink = Color(dynamicLight: "#31261F", dark: "#F6EEE5")
+    static let muted = Color(dynamicLight: "#8A7765", dark: "#BBA896")
+    static let line = Color(dynamicLight: "#D7C6B4", dark: "#473A31")
 
-    static let sunnyGreen = Color(dynamicLight: "#2E9D5B", dark: "#6FD98A")
-    static let partialAmber = Color(dynamicLight: "#D89A28", dark: "#F0C05F")
-    static let shadedRed = Color(dynamicLight: "#D9534F", dark: "#FF7E79")
+    static let sunnyGreen = Color(dynamicLight: "#B07B2E", dark: "#D0A35C")
+    static let partialAmber = Color(dynamicLight: "#C39A66", dark: "#DEBC8B")
+    static let shadedRed = Color(dynamicLight: "#9D685B", dark: "#C89082")
 
-    static let focusBlue = Color(dynamicLight: "#4A82D7", dark: "#78AAFA")
-    static let clusterGray = Color(dynamicLight: "#72675D", dark: "#9D9288")
+    static let focusBlue = Color(dynamicLight: "#8A5D47", dark: "#C79A79")
+    static let clusterGray = Color(dynamicLight: "#7C6B5E", dark: "#A39284")
 
     static let accentGold = sun
 }
@@ -115,8 +115,8 @@ extension UIColor {
     }
 
     static func markerColor(for fraction: Double) -> UIColor {
-        if fraction >= 0.99 { return UIColor(hex: "#2E9D5B") }
-        if fraction <= 0.01 { return UIColor(hex: "#D9534F") }
-        return UIColor(hex: "#D89A28")
+        if fraction >= 0.99 { return UIColor(hex: "#B07B2E") }
+        if fraction <= 0.01 { return UIColor(hex: "#9D685B") }
+        return UIColor(hex: "#C39A66")
     }
 }

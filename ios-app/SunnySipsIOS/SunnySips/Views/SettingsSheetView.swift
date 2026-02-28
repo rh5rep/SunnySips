@@ -47,6 +47,7 @@ struct SettingsSheetView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .tint(ThemeColor.focusBlue)
 
                 Text(themeDescription)
                     .font(.caption)
@@ -87,6 +88,7 @@ struct SettingsSheetView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .tint(ThemeColor.focusBlue)
 
                     Text(mapDensity.subtitle)
                         .font(.caption)
@@ -109,7 +111,14 @@ struct SettingsSheetView: View {
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
                     .frame(height: 36)
-                    .background(ThemeColor.focusBlue, in: Capsule())
+                    .background(
+                        LinearGradient(
+                            colors: [ThemeColor.focusBlue, ThemeColor.coffee],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        in: Capsule()
+                    )
             }
             .buttonStyle(.plain)
         }
@@ -143,7 +152,13 @@ struct SettingsSheetView: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(ThemeColor.surface.opacity(0.96))
+                .fill(
+                    LinearGradient(
+                        colors: [ThemeColor.surface.opacity(0.98), ThemeColor.surfaceSoft.opacity(0.88)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)

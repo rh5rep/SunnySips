@@ -124,7 +124,7 @@ struct FiltersSheetView: View {
                     Spacer(minLength: 0)
                     Toggle("", isOn: useNowBinding)
                         .labelsHidden()
-                        .tint(ThemeColor.sun)
+                        .tint(ThemeColor.focusBlue)
                 }
 
                 if !viewModel.filters.useNow {
@@ -136,7 +136,7 @@ struct FiltersSheetView: View {
                             .minimumScaleFactor(0.85)
                             .padding(.horizontal, 10)
                             .frame(height: 30)
-                            .background(ThemeColor.focusBlue.opacity(0.18), in: Capsule())
+                            .background(ThemeColor.sun.opacity(0.18), in: Capsule())
                         Spacer(minLength: 0)
                     }
 
@@ -205,7 +205,7 @@ struct FiltersSheetView: View {
                     Spacer()
                     Toggle("", isOn: favoritesOnlyBinding)
                         .labelsHidden()
-                        .tint(ThemeColor.sun)
+                        .tint(ThemeColor.focusBlue)
                 }
 
                 rowSeparator
@@ -316,7 +316,13 @@ struct FiltersSheetView: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(ThemeColor.surface.opacity(0.96))
+                .fill(
+                    LinearGradient(
+                        colors: [ThemeColor.surface.opacity(0.98), ThemeColor.surfaceSoft.opacity(0.88)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -355,11 +361,11 @@ struct FiltersSheetView: View {
             .foregroundStyle(selected ? .white : ThemeColor.ink)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(selected ? tint : ThemeColor.surfaceSoft.opacity(0.92))
+                    .fill(selected ? tint : ThemeColor.surface.opacity(0.96))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(selected ? tint.opacity(0.2) : ThemeColor.line.opacity(0.4), lineWidth: 1)
+                    .stroke(selected ? tint.opacity(0.18) : ThemeColor.line.opacity(0.42), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -434,13 +440,17 @@ struct FiltersSheetView: View {
         } label: {
             Text(title)
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(.white.opacity(enabled ? 1.0 : 0.8))
+                .foregroundStyle(enabled ? .white : ThemeColor.surface.opacity(0.78))
                 .lineLimit(1)
                 .padding(.horizontal, 11)
                 .frame(height: 30)
                 .background(
-                    ThemeColor.focusBlue.opacity(enabled ? 0.92 : 0.35),
-                    in: Capsule()
+                    Capsule()
+                        .fill(enabled ? ThemeColor.focusBlue : ThemeColor.clusterGray.opacity(0.42))
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(enabled ? ThemeColor.focusBlue.opacity(0.18) : ThemeColor.line.opacity(0.28), lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)

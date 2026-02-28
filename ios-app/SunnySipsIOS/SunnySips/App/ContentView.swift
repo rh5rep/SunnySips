@@ -96,12 +96,18 @@ struct ContentView: View {
 
                 VStack(spacing: 8) {
                     statusPillsBar
-                    statsHeader
+                    floatingConditionRail
+                    bottomWarningBanner
+                    if !viewModel.filters.useNow {
+                        forecastTray
+                    }
+                    bottomAreaDock
                 }
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .simultaneousGesture(modeSwipeGesture)
 
                 mapFloatingControls
                     .padding(.trailing, 12)
@@ -450,18 +456,42 @@ struct ContentView: View {
 
             Spacer(minLength: 8)
 
-            Label(weatherStatusPillText, systemImage: weatherStatusPillSymbol)
-                .timePillStyle(.muted, size: .small)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-                .truncationMode(.tail)
-                .frame(minWidth: 116, alignment: .trailing)
+            modeToggleBar
         }
         .frame(maxWidth: .infinity)
     }
 
-    private var statsHeader: some View {
-        VStack(alignment: .leading, spacing: 7) {
+    private var floatingConditionRail: some View {
+        HStack(spacing: 8) {
+            floatingBucketPill(bucket: .sunny, label: "Sunny", count: viewModel.stats.sunny, icon: "sun.max.fill", color: ThemeColor.sunnyGreen)
+                .frame(maxWidth: .infinity)
+            floatingBucketPill(bucket: .partial, label: "Partial", count: viewModel.stats.partial, icon: "cloud.sun.fill", color: ThemeColor.partialAmber)
+                .frame(maxWidth: .infinity)
+            floatingBucketPill(bucket: .shaded, label: "Shaded", count: viewModel.stats.shaded, icon: "cloud.fill", color: ThemeColor.shadedRed)
+                .frame(maxWidth: .infinity)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var bottomWarningBanner: some View {
+        if let warning = viewModel.warningMessage {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(ThemeColor.shadedRed)
+                Text(warning)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(ThemeColor.coffeeDark)
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(ThemeColor.surfaceSoft.opacity(0.92), in: Capsule())
+        }
+    }
+
+    private var forecastTray: some View {
+        VStack(alignment: .leading, spacing: 10) {
             Capsule()
                 .fill(ThemeColor.line.opacity(0.7))
                 .frame(width: 52, height: 5)
@@ -470,149 +500,127 @@ struct ContentView: View {
                 .padding(.bottom, 2)
                 .accessibilityHidden(true)
 
-            HStack(alignment: .center, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Menu {
-                        ForEach(SunnyArea.allCases) { area in
-                            Button {
-                                viewModel.areaChanged(area)
-                            } label: {
-                                if viewModel.filters.area == area {
-                                    Label(area.title, systemImage: "checkmark")
-                                } else {
-                                    Text(area.title)
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(viewModel.areaTitle)
-                                .font(.headline.weight(.semibold))
-                            Image(systemName: "chevron.down")
-                                .font(.caption.weight(.bold))
-                        }
-                        .foregroundStyle(ThemeColor.ink)
-                    }
-
-                    Text("\(viewModel.cafes.count) cafes")
-                        .font(.caption2)
-                        .foregroundStyle(ThemeColor.muted)
-                }
-
-                Spacer(minLength: 6)
-
-                headerIconButton(systemName: "line.3.horizontal.decrease.circle", accessibility: "Open filters") {
-                    presentFilters()
-                }
-            }
-
             HStack(spacing: 8) {
-                bucketChip(bucket: .sunny, label: "\(viewModel.stats.sunny)", icon: "sun.max.fill", color: ThemeColor.sunnyGreen)
-                bucketChip(bucket: .partial, label: "\(viewModel.stats.partial)", icon: "cloud.sun.fill", color: ThemeColor.partialAmber)
-                bucketChip(bucket: .shaded, label: "\(viewModel.stats.shaded)", icon: "cloud.fill", color: ThemeColor.shadedRed)
+                Text(viewModel.selectedForecastTimeText)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(ThemeColor.coffeeDark)
+                    .lineLimit(1)
+
                 Spacer(minLength: 8)
-                modeToggleBar
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        viewModel.resetForecastTime()
+                    }
+                } label: {
+                    Label("Reset", systemImage: "arrow.counterclockwise")
+                        .timePillStyle(.secondary, size: .small)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Reset forecast time")
+
+                Button {
+                    toggleForecastPlayback()
+                } label: {
+                    Label(
+                        isForecastPlaybackActive ? "Pause" : "Play +3h",
+                        systemImage: isForecastPlaybackActive ? "pause.fill" : "play.fill"
+                    )
+                    .timePillStyle(isForecastPlaybackActive ? .primary : .secondary, size: .small)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isForecastPlaybackActive ? "Pause forecast playback" : "Play forecast 3 hours ahead")
             }
 
-            if let warning = viewModel.warningMessage {
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(ThemeColor.shadedRed)
-                    Text(warning)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(ThemeColor.coffeeDark)
-                    Spacer()
+                    forecastJumpChip(minutes: 15)
+                    forecastJumpChip(minutes: 30)
+                    forecastJumpChip(minutes: 60)
+                    forecastJumpChip(minutes: 120)
+                    forecastJumpChip(minutes: 180)
+                    forecastJumpChip(minutes: 360)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(ThemeColor.surfaceSoft.opacity(0.92), in: Capsule())
             }
 
-            if !viewModel.filters.useNow {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(alignment: .center, spacing: 8) {
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                viewModel.resetForecastTime()
-                            }
-                        } label: {
-                            Label("Reset", systemImage: "arrow.counterclockwise")
-                                .timePillStyle(.secondary, size: .small)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Reset forecast time")
-
-                        Spacer(minLength: 8)
-
-                        Button {
-                            toggleForecastPlayback()
-                        } label: {
-                            Label(
-                                isForecastPlaybackActive ? "Pause" : "Play +3h",
-                                systemImage: isForecastPlaybackActive ? "pause.fill" : "play.fill"
-                            )
-                            .timePillStyle(isForecastPlaybackActive ? .primary : .secondary, size: .small)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(isForecastPlaybackActive ? "Pause forecast playback" : "Play forecast 3 hours ahead")
-                    }
-
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            forecastJumpChip(minutes: 15)
-                            forecastJumpChip(minutes: 30)
-                            forecastJumpChip(minutes: 60)
-                            forecastJumpChip(minutes: 120)
-                            forecastJumpChip(minutes: 180)
-                            forecastJumpChip(minutes: 360)
-                        }
-                    }
-
-                    if isForecastPlaybackActive {
-                        Text("Playing forecast in 30 minute steps to +3h")
-                            .font(.caption2)
-                            .foregroundStyle(ThemeColor.muted)
-                    }
-
-                    Button {
-                        presentForecastTimePicker()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "calendar.badge.clock")
-                            Text("Open Full Forecast Timeline")
-                        }
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(ThemeColor.focusBlue)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 34)
-                        .background(ThemeColor.focusBlue.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Open full forecast timeline")
-                }
-                .transition(.move(edge: .top).combined(with: .opacity))
+            if isForecastPlaybackActive {
+                Text("Playing forecast in 30 minute steps to +3h")
+                    .font(.caption2)
+                    .foregroundStyle(ThemeColor.muted)
             }
+
+            Button {
+                presentForecastTimePicker()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar.badge.clock")
+                    Text("Open Full Forecast Timeline")
+                }
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(ThemeColor.coffeeDark)
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+                .background(ThemeColor.surfaceSoft.opacity(0.82), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(ThemeColor.line.opacity(0.45), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open full forecast timeline")
         }
-        .animation(.easeInOut(duration: 0.2), value: viewModel.filters.useNow)
         .padding(10)
         .background(
-            LinearGradient(
-                colors: [
-                    ThemeColor.surface.opacity(0.98),
-                    ThemeColor.surfaceSoft.opacity(0.95)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+            ThemeColor.surface.opacity(0.985),
+            in: RoundedRectangle(cornerRadius: 30, style: .continuous)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
                 .stroke(ThemeColor.line.opacity(0.55), lineWidth: 1)
         )
-        .shadow(color: ThemeColor.coffeeDark.opacity(0.1), radius: 8, x: 0, y: 4)
-        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .simultaneousGesture(modeSwipeGesture)
+        .shadow(color: ThemeColor.coffeeDark.opacity(0.1), radius: 10, x: 0, y: 5)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private var bottomAreaDock: some View {
+        HStack {
+            Spacer(minLength: 0)
+
+            Menu {
+                ForEach(SunnyArea.allCases) { area in
+                    Button {
+                        viewModel.areaChanged(area)
+                    } label: {
+                        if viewModel.filters.area == area {
+                            Label(area.title, systemImage: "checkmark")
+                        } else {
+                            Text(area.title)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(viewModel.areaTitle)
+                        .font(.title3.weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.92)
+                    Image(systemName: "chevron.down")
+                        .font(.footnote.weight(.semibold))
+                }
+                .foregroundStyle(ThemeColor.coffeeDark)
+                .padding(.horizontal, 22)
+                .frame(height: 56)
+                .background(ThemeColor.surface.opacity(0.985), in: Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(ThemeColor.line.opacity(0.55), lineWidth: 1)
+                )
+                .shadow(color: ThemeColor.coffeeDark.opacity(0.1), radius: 10, x: 0, y: 5)
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 0)
+        }
     }
 
     private var modeToggleBar: some View {
@@ -621,7 +629,7 @@ struct ContentView: View {
             modeToggleButton(title: "Forecast", useNow: false)
         }
         .padding(2)
-        .background(ThemeColor.surfaceSoft.opacity(0.98), in: Capsule())
+        .background(ThemeColor.surfaceSoft.opacity(0.94), in: Capsule())
         .overlay(Capsule().stroke(ThemeColor.line.opacity(0.4), lineWidth: 1))
         .frame(height: controlPillHeight)
         .fixedSize(horizontal: true, vertical: false)
@@ -636,16 +644,61 @@ struct ContentView: View {
         } label: {
             Text(title)
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(isSelected ? ThemeColor.surface : ThemeColor.coffeeDark)
+                .foregroundStyle(isSelected ? .white : ThemeColor.muted)
                 .padding(.horizontal, 12)
                 .frame(height: controlPillHeight - 4)
                 .background(
                     Capsule()
-                        .fill(isSelected ? ThemeColor.focusBlue : .clear)
+                        .fill(
+                            isSelected
+                            ? AnyShapeStyle(
+                                LinearGradient(
+                                    colors: [ThemeColor.focusBlue, ThemeColor.coffee],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            : AnyShapeStyle(Color.clear)
+                        )
                 )
+                .shadow(color: Color.black.opacity(isSelected ? 0.1 : 0.0), radius: 4, x: 0, y: 2)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Switch to \(title) mode")
+    }
+
+    private func floatingBucketPill(bucket: SunnyBucketFilter, label: String, count: Int, icon: String, color: Color) -> some View {
+        let isSelected = viewModel.filters.selectedBuckets.contains(bucket)
+
+        return Button {
+            withAnimation(.spring(duration: 0.22)) {
+                viewModel.toggleBucket(bucket)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.caption.weight(.semibold))
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                Text("\(count)")
+                    .font(.caption.weight(.bold))
+            }
+            .foregroundStyle(isSelected ? .white : ThemeColor.coffeeDark)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(
+                Capsule()
+                    .fill(isSelected ? color : ThemeColor.surface.opacity(0.96))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(isSelected ? color.opacity(0.18) : ThemeColor.line.opacity(0.45), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(isSelected ? 0.08 : 0.04), radius: 4, x: 0, y: 2)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(label), \(count) cafes")
     }
 
     private var mapFloatingControls: some View {
@@ -664,6 +717,10 @@ struct ContentView: View {
 
             mapControlButton(systemName: "gearshape", accessibility: "Open settings") {
                 presentSettings()
+            }
+
+            mapControlButton(systemName: "line.3.horizontal.decrease.circle", accessibility: "Open filters") {
+                presentFilters()
             }
         }
     }
@@ -702,12 +759,16 @@ struct ContentView: View {
         } label: {
             Text(jumpLabel(minutes: minutes))
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(selected ? ThemeColor.surface : ThemeColor.focusBlue)
+                .foregroundStyle(selected ? .white : ThemeColor.focusBlue)
                 .padding(.horizontal, 11)
                 .frame(height: 30)
                 .background(
                     Capsule()
-                        .fill(selected ? ThemeColor.focusBlue : ThemeColor.focusBlue.opacity(0.12))
+                        .fill(selected ? ThemeColor.focusBlue : ThemeColor.surface)
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(selected ? ThemeColor.focusBlue.opacity(0.18) : ThemeColor.line.opacity(0.45), lineWidth: 1)
                 )
                 .fixedSize(horizontal: true, vertical: false)
         }
@@ -831,32 +892,6 @@ struct ContentView: View {
                     }
                 }
             }
-    }
-
-    private func bucketChip(bucket: SunnyBucketFilter, label: String, icon: String, color: Color) -> some View {
-        let isSelected = viewModel.filters.selectedBuckets.contains(bucket)
-
-        return Button {
-            withAnimation(.spring(duration: 0.22)) {
-                viewModel.toggleBucket(bucket)
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: icon)
-                    .foregroundStyle(isSelected ? ThemeColor.surface : color)
-                Text(label)
-                    .foregroundStyle(isSelected ? ThemeColor.surface : ThemeColor.coffeeDark)
-            }
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 9)
-            .frame(height: controlPillHeight)
-            .background(
-                Capsule()
-                    .fill(isSelected ? color.opacity(0.95) : ThemeColor.surfaceSoft.opacity(0.95))
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Filter \(bucket.title)")
     }
 
     private var controlPillHeight: CGFloat { 34 }

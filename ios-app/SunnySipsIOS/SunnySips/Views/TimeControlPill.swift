@@ -11,11 +11,11 @@ enum TimePillTone {
         case .primary:
             return ThemeColor.focusBlue
         case .secondary:
-            return Color(dynamicLight: "#8F7D6B", dark: "#4C4136")
+            return Color(dynamicLight: "#A68C73", dark: "#56473B")
         case .muted:
-            return Color(dynamicLight: "#9E8F7E", dark: "#5A4E43")
+            return Color(dynamicLight: "#B9A28A", dark: "#675649")
         case .sunny:
-            return Color(dynamicLight: "#2E9D5B", dark: "#2F8A57")
+            return Color(dynamicLight: "#A77628", dark: "#8C652E")
         }
     }
 }

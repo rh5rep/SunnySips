@@ -7,7 +7,7 @@ struct SunnySipsIOSApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .tint(ThemeColor.accentGold)
+                .tint(ThemeColor.focusBlue)
                 .preferredColorScheme(AppTheme(rawValue: themeRawValue)?.preferredColorScheme)
         }
     }

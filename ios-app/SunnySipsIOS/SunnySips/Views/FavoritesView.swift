@@ -47,8 +47,11 @@ struct FavoritesView: View {
                         }
                     }
                     .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .background(ThemeColor.bg.opacity(0.45).ignoresSafeArea())
                 }
             }
+            .background(ThemeColor.bg.opacity(0.45).ignoresSafeArea())
             .navigationTitle("Favorites")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -56,6 +59,7 @@ struct FavoritesView: View {
                     Button("Close") {
                         dismiss()
                     }
+                    .foregroundStyle(ThemeColor.accentGold)
                     .accessibilityLabel("Close favorites")
                 }
             }
@@ -112,20 +116,33 @@ struct FavoritesView: View {
     @ViewBuilder
     private var controlsSection: some View {
         Section {
-            Picker("Favorites segment", selection: $selectedSegment) {
-                ForEach(FavoritesSegment.allCases) { segment in
-                    Text(segment.rawValue).tag(segment)
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("Favorites segment", selection: $selectedSegment) {
+                    ForEach(FavoritesSegment.allCases) { segment in
+                        Text(segment.rawValue).tag(segment)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .tint(ThemeColor.focusBlue)
+                .labelsHidden()
+                .accessibilityLabel("Favorites view mode")
+
+                if isFavoritesCapped {
+                    Text("Showing top \(visibleFavoriteCount) of \(totalFavoriteCount) favorites, prioritized by best upcoming sun.")
+                        .font(.caption2)
+                        .foregroundStyle(ThemeColor.muted)
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .accessibilityLabel("Favorites view mode")
-
-            if isFavoritesCapped {
-                Text("Showing top \(visibleFavoriteCount) of \(totalFavoriteCount) favorites, prioritized by best upcoming sun.")
-                    .font(.caption2)
-                    .foregroundStyle(ThemeColor.muted)
-            }
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(ThemeColor.surface.opacity(0.96))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(ThemeColor.line.opacity(0.4), lineWidth: 1)
+            )
+            .listRowBackground(Color.clear)
         }
     }
 
@@ -160,9 +177,20 @@ struct FavoritesView: View {
                             Image(systemName: "heart.fill")
                                 .foregroundStyle(ThemeColor.accentGold)
                         }
-                        .padding(.vertical, 6)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(ThemeColor.surface.opacity(0.96))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(ThemeColor.line.opacity(0.38), lineWidth: 1)
+                        )
                     }
                     .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                    .listRowBackground(Color.clear)
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button(role: .destructive) {
                             onRemoveFavorite(cafe)
@@ -312,8 +340,12 @@ struct FavoritesView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(
-                ThemeColor.surfaceSoft.opacity(0.74),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(ThemeColor.surface.opacity(0.96))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(ThemeColor.line.opacity(0.35), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
