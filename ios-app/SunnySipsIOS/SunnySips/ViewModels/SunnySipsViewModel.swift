@@ -345,7 +345,7 @@ final class SunnySipsViewModel: ObservableObject {
         filters.useNow = useNow
         if useNow {
             // Reset forecast baseline so returning to forecast starts fresh.
-            filters.selectedTime = clampToPredictionRange(Date().addingTimeInterval(30 * 60))
+            filters.selectedTime = defaultForecastBaseline()
         } else {
             filters.selectedTime = clampToPredictionRange(filters.selectedTime)
         }
@@ -353,7 +353,7 @@ final class SunnySipsViewModel: ObservableObject {
     }
 
     func resetForecastTime() {
-        filters.selectedTime = clampToPredictionRange(Date().addingTimeInterval(30 * 60))
+        filters.selectedTime = defaultForecastBaseline()
         guard !filters.useNow else { return }
         Task { await reloadFromAPI() }
     }
@@ -361,7 +361,7 @@ final class SunnySipsViewModel: ObservableObject {
     func togglePredictFutureMode() {
         if filters.useNow {
             filters.useNow = false
-            filters.selectedTime = clampToPredictionRange(Date().addingTimeInterval(30 * 60))
+            filters.selectedTime = defaultForecastBaseline()
         } else {
             filters.useNow = true
         }
@@ -844,6 +844,11 @@ final class SunnySipsViewModel: ObservableObject {
 
     private var selectedTargetTime: Date {
         filters.useNow ? Date() : filters.selectedTime
+    }
+
+    private func defaultForecastBaseline(reference: Date = Date()) -> Date {
+        let rounded = reference.roundedDownToQuarterHour()
+        return clampToPredictionRange(rounded.addingTimeInterval(15 * 60))
     }
 
     private func clampToPredictionRange(_ date: Date) -> Date {

@@ -95,13 +95,11 @@ struct ContentView: View {
                 }
 
                 VStack(spacing: 8) {
-                    statusPillsBar
-                    floatingConditionRail
                     bottomWarningBanner
+                    tabletopControlCluster
                     if !viewModel.filters.useNow {
                         forecastTray
                     }
-                    bottomAreaDock
                 }
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
@@ -445,144 +443,16 @@ struct ContentView: View {
         .shadow(color: ThemeColor.coffeeDark.opacity(0.12), radius: 8, x: 0, y: 4)
     }
 
-    private var statusPillsBar: some View {
-        HStack(spacing: 8) {
-            Label(skyCoveragePillText, systemImage: skyCoveragePillSymbol)
-                .timePillStyle(skyCoveragePillTone, size: .small)
-                .lineLimit(1)
-                .minimumScaleFactor(0.9)
-                .truncationMode(.tail)
-                .frame(minWidth: 116, alignment: .leading)
-
-            Spacer(minLength: 8)
-
-            modeToggleBar
+    private var tabletopControlCluster: some View {
+        VStack(spacing: 8) {
+            areaScopeCap
+            floatingConditionRail
+            statusAndModeRow
         }
         .frame(maxWidth: .infinity)
     }
 
-    private var floatingConditionRail: some View {
-        HStack(spacing: 8) {
-            floatingBucketPill(bucket: .sunny, label: "Sunny", count: viewModel.stats.sunny, icon: "sun.max.fill", color: ThemeColor.sunnyGreen)
-                .frame(maxWidth: .infinity)
-            floatingBucketPill(bucket: .partial, label: "Partial", count: viewModel.stats.partial, icon: "cloud.sun.fill", color: ThemeColor.partialAmber)
-                .frame(maxWidth: .infinity)
-            floatingBucketPill(bucket: .shaded, label: "Shaded", count: viewModel.stats.shaded, icon: "cloud.fill", color: ThemeColor.shadedRed)
-                .frame(maxWidth: .infinity)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    @ViewBuilder
-    private var bottomWarningBanner: some View {
-        if let warning = viewModel.warningMessage {
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(ThemeColor.shadedRed)
-                Text(warning)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(ThemeColor.coffeeDark)
-                Spacer()
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(ThemeColor.surfaceSoft.opacity(0.92), in: Capsule())
-        }
-    }
-
-    private var forecastTray: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Capsule()
-                .fill(ThemeColor.line.opacity(0.7))
-                .frame(width: 52, height: 5)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 2)
-                .padding(.bottom, 2)
-                .accessibilityHidden(true)
-
-            HStack(spacing: 8) {
-                Text(viewModel.selectedForecastTimeText)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(ThemeColor.coffeeDark)
-                    .lineLimit(1)
-
-                Spacer(minLength: 8)
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        viewModel.resetForecastTime()
-                    }
-                } label: {
-                    Label("Reset", systemImage: "arrow.counterclockwise")
-                        .timePillStyle(.secondary, size: .small)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Reset forecast time")
-
-                Button {
-                    toggleForecastPlayback()
-                } label: {
-                    Label(
-                        isForecastPlaybackActive ? "Pause" : "Play +3h",
-                        systemImage: isForecastPlaybackActive ? "pause.fill" : "play.fill"
-                    )
-                    .timePillStyle(isForecastPlaybackActive ? .primary : .secondary, size: .small)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isForecastPlaybackActive ? "Pause forecast playback" : "Play forecast 3 hours ahead")
-            }
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    forecastJumpChip(minutes: 15)
-                    forecastJumpChip(minutes: 30)
-                    forecastJumpChip(minutes: 60)
-                    forecastJumpChip(minutes: 120)
-                    forecastJumpChip(minutes: 180)
-                    forecastJumpChip(minutes: 360)
-                }
-            }
-
-            if isForecastPlaybackActive {
-                Text("Playing forecast in 30 minute steps to +3h")
-                    .font(.caption2)
-                    .foregroundStyle(ThemeColor.muted)
-            }
-
-            Button {
-                presentForecastTimePicker()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "calendar.badge.clock")
-                    Text("Open Full Forecast Timeline")
-                }
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(ThemeColor.coffeeDark)
-                .frame(maxWidth: .infinity)
-                .frame(height: 34)
-                .background(ThemeColor.surfaceSoft.opacity(0.82), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(ThemeColor.line.opacity(0.45), lineWidth: 1)
-                )
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open full forecast timeline")
-        }
-        .padding(10)
-        .background(
-            ThemeColor.surface.opacity(0.985),
-            in: RoundedRectangle(cornerRadius: 30, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .stroke(ThemeColor.line.opacity(0.55), lineWidth: 1)
-        )
-        .shadow(color: ThemeColor.coffeeDark.opacity(0.1), radius: 10, x: 0, y: 5)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
-    }
-
-    private var bottomAreaDock: some View {
+    private var areaScopeCap: some View {
         HStack {
             Spacer(minLength: 0)
 
@@ -623,16 +493,150 @@ struct ContentView: View {
         }
     }
 
+    private var statusAndModeRow: some View {
+        GeometryReader { proxy in
+            let spacing: CGFloat = 8
+            let unitWidth = max((proxy.size.width - (spacing * 2)) / 3, 0)
+
+            HStack(spacing: spacing) {
+                contextStatusPill
+                    .frame(width: unitWidth)
+
+                modeToggleBar
+                    .frame(width: (unitWidth * 2) + spacing)
+            }
+            .frame(width: proxy.size.width, alignment: .leading)
+        }
+        .frame(height: controlPillHeight)
+    }
+
+    private var contextStatusPill: some View {
+        Text(skyCoveragePillText)
+            .font(.footnote.weight(.semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .truncationMode(.tail)
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .frame(height: controlPillHeight)
+        .background(
+            Capsule()
+                .fill(skyCoveragePillTone.background.opacity(0.92))
+        )
+        .shadow(color: Color.black.opacity(0.16), radius: 2, x: 0, y: 1)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var floatingConditionRail: some View {
+        HStack(spacing: 8) {
+            floatingBucketPill(bucket: .sunny, label: "Sunny", count: viewModel.stats.sunny, icon: "sun.max.fill", color: ThemeColor.sunnyGreen)
+                .frame(maxWidth: .infinity)
+            floatingBucketPill(bucket: .partial, label: "Partial", count: viewModel.stats.partial, icon: "cloud.sun.fill", color: ThemeColor.partialAmber)
+                .frame(maxWidth: .infinity)
+            floatingBucketPill(bucket: .shaded, label: "Shaded", count: viewModel.stats.shaded, icon: "cloud.fill", color: ThemeColor.shadedRed)
+                .frame(maxWidth: .infinity)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var bottomWarningBanner: some View {
+        if let warning = viewModel.warningMessage {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(ThemeColor.shadedRed)
+                Text(warning)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(ThemeColor.coffeeDark)
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(ThemeColor.surfaceSoft.opacity(0.92), in: Capsule())
+            .allowsHitTesting(false)
+        }
+    }
+
+    private var forecastTray: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            GeometryReader { proxy in
+                let spacing: CGFloat = 8
+                let sideWidth = max(92, min(102, proxy.size.width * 0.205))
+
+                HStack(spacing: spacing) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.resetForecastTime()
+                        }
+                    } label: {
+                        forecastActionPill(
+                            title: "Reset",
+                            systemImage: "arrow.counterclockwise",
+                            width: sideWidth,
+                            tone: .secondary
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Reset forecast time")
+
+                    Button {
+                        presentForecastTimePicker()
+                    } label: {
+                        forecastTimePill()
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Adjust forecast date and time")
+
+                    Button {
+                        toggleForecastPlayback()
+                    } label: {
+                        forecastActionPill(
+                            title: isForecastPlaybackActive ? "Pause" : "Play +3h",
+                            systemImage: isForecastPlaybackActive ? "pause.fill" : "play.fill",
+                            width: sideWidth,
+                            tone: isForecastPlaybackActive ? .primary : .secondary
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isForecastPlaybackActive ? "Pause forecast playback" : "Play forecast 3 hours ahead")
+                }
+                .frame(width: proxy.size.width)
+            }
+            .frame(height: controlPillHeight)
+
+            HStack(spacing: 6) {
+                forecastJumpChip(minutes: 15)
+                forecastJumpChip(minutes: 30)
+                forecastJumpChip(minutes: 60)
+                forecastJumpChip(minutes: 120)
+                forecastJumpChip(minutes: 180)
+                forecastJumpChip(minutes: 360)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(10)
+        .background(
+            ThemeColor.surface.opacity(0.985),
+            in: RoundedRectangle(cornerRadius: 30, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .stroke(ThemeColor.line.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: ThemeColor.coffeeDark.opacity(0.1), radius: 10, x: 0, y: 5)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
     private var modeToggleBar: some View {
         HStack(spacing: 4) {
             modeToggleButton(title: "Live", useNow: true)
             modeToggleButton(title: "Forecast", useNow: false)
         }
+        .frame(maxWidth: .infinity)
         .padding(2)
         .background(ThemeColor.surfaceSoft.opacity(0.94), in: Capsule())
         .overlay(Capsule().stroke(ThemeColor.line.opacity(0.4), lineWidth: 1))
         .frame(height: controlPillHeight)
-        .fixedSize(horizontal: true, vertical: false)
     }
 
     private func modeToggleButton(title: String, useNow: Bool) -> some View {
@@ -645,7 +649,9 @@ struct ContentView: View {
             Text(title)
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(isSelected ? .white : ThemeColor.muted)
-                .padding(.horizontal, 12)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity)
                 .frame(height: controlPillHeight - 4)
                 .background(
                     Capsule()
@@ -667,6 +673,46 @@ struct ContentView: View {
         .accessibilityLabel("Switch to \(title) mode")
     }
 
+    private func forecastActionPill(title: String, systemImage: String, width: CGFloat, tone: TimePillTone) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.caption.weight(.semibold))
+            Text(title)
+                .font(.footnote.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+        .foregroundStyle(.white)
+        .frame(width: width, height: controlPillHeight)
+        .background(
+            Capsule()
+                .fill(tone.background.opacity(0.92))
+        )
+        .shadow(color: Color.black.opacity(0.16), radius: 2, x: 0, y: 1)
+    }
+
+    private func forecastTimePill() -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "calendar.badge.clock")
+                .font(.footnote.weight(.semibold))
+            Text(viewModel.selectedForecastTimeText)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+            Image(systemName: "chevron.down")
+                .font(.caption.weight(.bold))
+        }
+        .padding(.horizontal, 14)
+        .foregroundStyle(ThemeColor.coffeeDark)
+        .frame(maxWidth: .infinity)
+        .frame(height: controlPillHeight)
+        .background(ThemeColor.surfaceSoft.opacity(0.82), in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(ThemeColor.line.opacity(0.45), lineWidth: 1)
+        )
+    }
+
     private func floatingBucketPill(bucket: SunnyBucketFilter, label: String, count: Int, icon: String, color: Color) -> some View {
         let isSelected = viewModel.filters.selectedBuckets.contains(bucket)
 
@@ -677,11 +723,11 @@ struct ContentView: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.caption.weight(.semibold))
+                    .font(.footnote.weight(.semibold))
                 Text(label)
-                    .font(.caption.weight(.semibold))
+                    .font(.footnote.weight(.semibold))
                 Text("\(count)")
-                    .font(.caption.weight(.bold))
+                    .font(.footnote.weight(.bold))
             }
             .foregroundStyle(isSelected ? .white : ThemeColor.coffeeDark)
             .frame(maxWidth: .infinity)
@@ -758,10 +804,10 @@ struct ContentView: View {
             }
         } label: {
             Text(jumpLabel(minutes: minutes))
-                .font(.caption.weight(.semibold))
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(selected ? .white : ThemeColor.focusBlue)
-                .padding(.horizontal, 11)
-                .frame(height: 30)
+                .frame(maxWidth: .infinity)
+                .frame(height: controlPillHeight)
                 .background(
                     Capsule()
                         .fill(selected ? ThemeColor.focusBlue : ThemeColor.surface)
@@ -770,7 +816,6 @@ struct ContentView: View {
                     Capsule()
                         .stroke(selected ? ThemeColor.focusBlue.opacity(0.18) : ThemeColor.line.opacity(0.45), lineWidth: 1)
                 )
-                .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -841,7 +886,7 @@ struct ContentView: View {
             return "Sunset"
         }
         if sunnyPercentRounded >= cloudPercentRounded {
-            return "Sunny \(sunnyPercentRounded)%"
+            return "Sun \(sunnyPercentRounded)%"
         }
         return "Cloud \(cloudPercentRounded)%"
     }
